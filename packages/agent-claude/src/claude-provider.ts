@@ -10,6 +10,7 @@ import {
   type HookJSONOutput,
   type McpServerConfig,
   type Options,
+  type SandboxSettings,
   type SDKMessage,
   type SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
@@ -64,6 +65,54 @@ const FILE_TOOLS: ReadonlySet<string> = new Set([
   'MultiEdit',
   'NotebookEdit',
 ]);
+
+/** The tools that read files, and the input fields that name what they read. */
+const READ_TOOLS: ReadonlyMap<string, readonly string[]> = new Map([
+  [
+    'Read',
+    ['file_path'],
+  ],
+  [
+    'NotebookRead',
+    ['notebook_path'],
+  ],
+  [
+    'Glob',
+    [
+      'path',
+      'pattern',
+    ],
+  ],
+  [
+    'Grep',
+    ['path'],
+  ],
+]);
+
+/**
+ * Credential files a sandboxed shell command may not read: the GitHub CLI's token, boardwright's own App
+ * key, and the usual keys and tokens of a developer's home. The Read tool is kept to the worktree by the guard.
+ */
+export const CREDENTIAL_PATHS: readonly string[] = [
+  '~/.config/gh',
+  '~/.config/boardwright',
+  '~/.claude/.credentials.json',
+  '~/.ssh',
+  '~/.aws',
+  '~/.azure',
+  '~/.config/gcloud',
+  '~/.kube',
+  '~/.docker/config.json',
+  '~/.npmrc',
+  '~/.git-credentials',
+  '~/.netrc',
+  '~/.pypirc',
+  '~/.composer/auth.json',
+  '~/.config/composer/auth.json',
+];
+
+/** Where a glob pattern stops being a literal path. */
+const GLOB_SYNTAX = /[*?[{]/u;
 
 /** Pushing and talking to GitHub are the pipeline's job, after it has checked the change. */
 const FORBIDDEN_COMMAND = /\bgit\s+push\b|(?:^|[;&|(\s])gh\s/u;
@@ -167,6 +216,15 @@ export interface ClaudeProviderOptions {
 
   /** The environment the agent's process starts from, before the tokens are removed. */
   readonly environment?: Readonly<Record<string, string | undefined>>;
+
+  /** The config's `provider.sandbox`; without it, shell commands run unsandboxed. */
+  readonly sandbox?: AgentSandbox;
+}
+
+/** Whether the agent's shell commands run in the SDK's sandbox, and the hosts they may reach. */
+export interface AgentSandbox {
+  readonly enabled: boolean;
+  readonly allowedDomains: readonly string[];
 }
 
 /**
@@ -181,9 +239,12 @@ export class ClaudeAgentProvider implements AgentProvider {
 
   private readonly environment: Readonly<Record<string, string | undefined>>;
 
+  private readonly sandbox: AgentSandbox | undefined;
+
   constructor(options: ClaudeProviderOptions = {}) {
     this.query = options.query ?? sdkQuery;
     this.environment = options.environment ?? process.env;
+    this.sandbox = options.sandbox;
   }
 
   /** Runs the session to its result, aborting it when the stage's time runs out. */
@@ -282,6 +343,7 @@ export class ClaudeAgentProvider implements AgentProvider {
         }],
       },
       mcpServers,
+      ...this.sandbox?.enabled === true ? { sandbox: sandboxSettings(this.sandbox) } : {},
       env: withoutTokens(this.environment),
       abortController: abort,
       persistSession: false,
@@ -290,12 +352,13 @@ export class ClaudeAgentProvider implements AgentProvider {
 }
 
 /**
- * A `PreToolUse` hook that denies writes to denied paths or outside the worktree, and commands that push
- * or call GitHub.
+ * A `PreToolUse` hook that denies writes to denied paths or outside the worktree, reads outside the
+ * worktree, and commands that push or call GitHub.
  *
  * @remarks
  * This is the first line; the core checks the diff again before anything is pushed, because a shell
- * command can still write a file this hook cannot see.
+ * command can still write a file this hook cannot see. Reads are limited to the worktree because the
+ * session runs as the machine's user, whose home holds credentials (the GitHub CLI's token, keys).
  */
 export function guardTools(
   cwd: string,
@@ -325,6 +388,16 @@ function deniedReason(
 ): string | undefined {
   const fields = typeof toolInput === 'object' && toolInput !== null ? toolInput as Record<string, unknown> : {};
 
+  const readFields = READ_TOOLS.get(toolName);
+
+  if (readFields !== undefined) {
+    return readProblem(
+      cwd,
+      readFields,
+      fields,
+    );
+  }
+
   if (FILE_TOOLS.has(toolName)) {
     const target = fields.file_path ?? fields.notebook_path;
 
@@ -346,11 +419,48 @@ function deniedReason(
   return undefined;
 }
 
-function pathProblem(
+/** A read may name any path of the worktree, a denied one included, and nothing outside it. */
+function readProblem(
   cwd: string,
-  deniedPaths: readonly string[],
+  readFields: readonly string[],
+  fields: Readonly<Record<string, unknown>>,
+): string | undefined {
+  for (const field of readFields) {
+    const value = fields[field];
+
+    if (typeof value !== 'string') {
+      continue;
+    }
+
+    // A pattern is checked up to its first wildcard: `/home/**` reads from /home.
+    const target = field === 'pattern' ? value.split(GLOB_SYNTAX)[0] ?? '' : value;
+
+    if (
+      target !== ''
+      && worktreePath(
+        cwd,
+        target,
+      ) === undefined
+    ) {
+      return `${value} is outside the worktree; agents read only the worktree.`;
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * The target relative to the worktree, with forward slashes; `undefined` when it is outside, a
+ * home-relative path (`~`) included.
+ */
+function worktreePath(
+  cwd: string,
   target: string,
 ): string | undefined {
+  if (target.startsWith('~')) {
+    return undefined;
+  }
+
   const path = relative(
     cwd,
     isAbsolute(target) ? target : join(
@@ -362,10 +472,20 @@ function pathProblem(
     '/',
   );
 
-  if (
-    path.startsWith('..')
-    || isAbsolute(path)
-  ) {
+  return path.startsWith('..') || isAbsolute(path) ? undefined : path;
+}
+
+function pathProblem(
+  cwd: string,
+  deniedPaths: readonly string[],
+  target: string,
+): string | undefined {
+  const path = worktreePath(
+    cwd,
+    target,
+  );
+
+  if (path === undefined) {
     return `${target} is outside the worktree.`;
   }
 
@@ -382,6 +502,24 @@ function deny(reason: string): HookJSONOutput {
       permissionDecision: 'deny',
       permissionDecisionReason: reason,
     },
+  };
+}
+
+/**
+ * The SDK's sandbox for the agent's shell commands: no credential file, only the listed hosts, and no
+ * retry outside the sandbox.
+ *
+ * @remarks
+ * The SDK refuses to start the session when the sandbox cannot run (bubblewrap and socat on Linux), rather
+ * than run the commands unsandboxed.
+ */
+export function sandboxSettings(sandbox: AgentSandbox): SandboxSettings {
+  return {
+    enabled: true,
+    failIfUnavailable: true,
+    allowUnsandboxedCommands: false,
+    filesystem: { denyRead: [...CREDENTIAL_PATHS] },
+    network: { allowedDomains: [...sandbox.allowedDomains] },
   };
 }
 

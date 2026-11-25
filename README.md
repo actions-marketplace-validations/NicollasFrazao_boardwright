@@ -147,6 +147,10 @@ concurrency: 1                   # agent runs one tick may start; the rest wait 
 provider:
   name: claude
   # model: claude-opus-5-5       # default: the Agent SDK's own
+  sandbox:                       # the agent's shell commands run in the Claude Code sandbox
+    enabled: true                # needs bubblewrap and socat on Linux; a session refuses to start without them
+    # allowedDomains:            # the hosts commands may reach; default: npm, PyPI, Packagist and GitHub's download hosts
+    #   - registry.npmjs.org
 git:
   # author:                      # who the agent's commits are attributed to; default: git's own config
   #   name: boardwright

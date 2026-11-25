@@ -56,8 +56,14 @@ The Claude provider (`packages/agent-claude/src/claude-provider.ts`) starts ever
   `TodoWrite`, plus dotcontext's read tools when the repository has a `.context` base); everything else is
   denied, and `WebFetch`, `WebSearch` and dotcontext's `sync` are denied even if the repository's settings
   allow them;
-- a `PreToolUse` hook that denies writes to a denied path or outside the worktree, and shell commands that
-  push or call `gh`;
+- a `PreToolUse` hook that denies writes to a denied path or outside the worktree, reads (`Read`, `Glob`,
+  `Grep`) outside the worktree, home-relative paths (`~`) included, and shell commands that push or call
+  `gh`;
+- shell commands in the Claude Code sandbox (`provider.sandbox`, on by default): they cannot read the
+  usual credential files of the machine's home (the GitHub CLI's token, boardwright's App key, SSH and
+  cloud keys, registry tokens), they reach only the listed hosts, and they cannot retry outside the
+  sandbox. On Linux it needs `bubblewrap` and `socat`; without them the session refuses to start rather
+  than run unsandboxed;
 - the environment without `BOARDWRIGHT_GITHUB_TOKEN`, `BOARDWRIGHT_MERGE_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`;
 - only the project's settings (`settingSources: ['project']`), not the machine user's;
 - for a review or a plan, read tools only (`Read`, `Glob`, `Grep`, `Bash`) with `Edit`, `Write`, `MultiEdit` and

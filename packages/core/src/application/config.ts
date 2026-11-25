@@ -102,6 +102,23 @@ const refineStage = z.object({
   ...limitsOverride,
 }).strict();
 
+/**
+ * The hosts a sandboxed agent command may reach unless the config lists its own: the common package
+ * registries and GitHub's download hosts, so installing dependencies works and little else does.
+ */
+const DEFAULT_SANDBOX_DOMAINS: readonly string[] = [
+  'registry.npmjs.org',
+  'registry.yarnpkg.com',
+  'pypi.org',
+  'files.pythonhosted.org',
+  'repo.packagist.org',
+  'packagist.org',
+  'github.com',
+  'codeload.github.com',
+  'objects.githubusercontent.com',
+  'api.github.com',
+];
+
 /** Paths whose changes always wait for a person to merge. */
 export const DEFAULT_MERGE_DENIED_PATHS: readonly string[] = [
   '.github/**',
@@ -206,6 +223,12 @@ export const pipelineConfigSchema = z.object({
   provider: z.object({
     name: z.string().min(1).default('claude'),
     model: z.string().min(1).optional(),
+
+    /** Runs the agent's shell commands in the provider's sandbox: no credential files, only the listed hosts. */
+    sandbox: z.object({
+      enabled: z.boolean().default(true),
+      allowedDomains: z.array(z.string().min(1)).default([...DEFAULT_SANDBOX_DOMAINS]),
+    }).strict().prefault({}),
   }).strict().prefault({}),
   git: z.object({
     /** Who the agent's commits are attributed to; without it, git's own config on the machine decides. */

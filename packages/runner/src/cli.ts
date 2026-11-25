@@ -139,7 +139,7 @@ process.exitCode = await runProgram(
         token,
         author: config.git.author,
       }),
-      agent: new ClaudeAgentProvider(),
+      agent: new ClaudeAgentProvider({ sandbox: config.provider.sandbox }),
     }),
   },
 );

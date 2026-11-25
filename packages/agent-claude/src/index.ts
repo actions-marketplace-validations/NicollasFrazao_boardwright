@@ -1,14 +1,17 @@
 export {
   ClaudeAgentProvider,
+  CREDENTIAL_PATHS,
   DENIED_TOOLS,
   guardTools,
   PLAN_REPORT_SCHEMA,
   REPORT_SCHEMA,
   REVIEW_REPORT_SCHEMA,
   REVIEW_TOOLS,
+  sandboxSettings,
   STAGE_TOOLS,
   TOKEN_VARIABLES,
   withoutTokens,
+  type AgentSandbox,
   type ClaudeProviderOptions,
   type QueryFunction,
 } from './claude-provider.ts';

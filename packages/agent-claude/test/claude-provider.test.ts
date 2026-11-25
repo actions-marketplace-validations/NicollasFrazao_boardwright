@@ -20,10 +20,12 @@ import {
 } from 'vitest';
 import {
   ClaudeAgentProvider,
+  CREDENTIAL_PATHS,
   guardTools,
   PLAN_REPORT_SCHEMA,
   REPORT_SCHEMA,
   REVIEW_REPORT_SCHEMA,
+  sandboxSettings,
   type QueryFunction,
 } from '../src/index.ts';
 
@@ -368,6 +370,52 @@ describe('guardTools', () => {
       { command: 'npm test; gh pr create --fill' },
       'boardwright pushes the branch',
     ],
+    [
+      'Read',
+      { file_path: '/home/someone/.config/gh/hosts.yml' },
+      '/home/someone/.config/gh/hosts.yml is outside the worktree; agents read only the worktree.',
+    ],
+    [
+      'Read',
+      { file_path: '~/.ssh/id_ed25519' },
+      '~/.ssh/id_ed25519 is outside the worktree',
+    ],
+    [
+      'Read',
+      { file_path: '../other/.env' },
+      '../other/.env is outside the worktree',
+    ],
+    [
+      'NotebookRead',
+      { notebook_path: '/srv/notes/notes.ipynb' },
+      '/srv/notes/notes.ipynb is outside the worktree',
+    ],
+    [
+      'Glob',
+      { pattern: '/home/someone/.config/**/*.pem' },
+      '/home/someone/.config/**/*.pem is outside the worktree',
+    ],
+    [
+      'Glob',
+      {
+        pattern: '**/*.json',
+        path: '/home/someone',
+      },
+      '/home/someone is outside the worktree',
+    ],
+    [
+      'Grep',
+      {
+        pattern: 'oauth_token',
+        path: '/home/someone/.config',
+      },
+      '/home/someone/.config is outside the worktree',
+    ],
+    [
+      'Write',
+      { file_path: '~/.bashrc' },
+      '~/.bashrc is outside the worktree.',
+    ],
   ])('denies %s %j', async (
     toolName,
     toolInput,
@@ -405,6 +453,32 @@ describe('guardTools', () => {
     [
       'Read',
       { file_path: '/work/tree/.github/workflows/ci.yml' },
+    ],
+    [
+      'Read',
+      { file_path: 'src/feature.ts' },
+    ],
+    [
+      'Glob',
+      { pattern: 'src/**/*.ts' },
+    ],
+    [
+      'Glob',
+      {
+        pattern: '**/*.ts',
+        path: '/work/tree/packages',
+      },
+    ],
+    [
+      'Grep',
+      { pattern: 'TODO' },
+    ],
+    [
+      'Grep',
+      {
+        pattern: 'TODO',
+        path: 'packages',
+      },
     ],
     [
       'Write',
@@ -598,5 +672,76 @@ describe('ClaudeAgentProvider: plan tasks', () => {
       status: 'completed',
       summary: 'x',
     })).status).toBe('failed');
+  });
+});
+
+describe('ClaudeAgentProvider: the sandbox', () => {
+  const sandbox = {
+    enabled: true,
+    allowedDomains: ['registry.npmjs.org'],
+  };
+
+  it('runs shell commands in the SDK sandbox: no credential file, only the listed hosts, no way out', () => {
+    expect(sandboxSettings(sandbox)).toEqual({
+      enabled: true,
+      failIfUnavailable: true,
+      allowUnsandboxedCommands: false,
+      filesystem: { denyRead: [...CREDENTIAL_PATHS] },
+      network: { allowedDomains: ['registry.npmjs.org'] },
+    });
+
+    expect(CREDENTIAL_PATHS).toEqual(expect.arrayContaining([
+      '~/.config/gh',
+      '~/.config/boardwright',
+      '~/.ssh',
+    ]));
+  });
+
+  it.each([
+    [
+      'enabled',
+      sandbox,
+      true,
+    ],
+    [
+      'disabled',
+      {
+        ...sandbox,
+        enabled: false,
+      },
+      false,
+    ],
+    [
+      'absent',
+      undefined,
+      false,
+    ],
+  ])('passes the sandbox to the session only when it is enabled: %s', (
+    _name,
+    option,
+    isSandboxed,
+  ) => {
+    const provider = new ClaudeAgentProvider({
+      query: () => {
+        throw new Error('not called');
+      },
+      ...option === undefined ? {} : { sandbox: option },
+    });
+
+    const options = provider.optionsFor(
+      {
+        stage: 'implement',
+        task: 'change',
+        cwd,
+        prompt: 'x',
+        maxTurns: 1,
+        timeoutMs: 1000,
+        deniedPaths: [],
+        model: undefined,
+      },
+      new AbortController(),
+    );
+
+    expect(options.sandbox !== undefined).toBe(isSandboxed);
   });
 });
