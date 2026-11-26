@@ -15,7 +15,17 @@ inputs:
   merge-token:
     description: >-
       Token of the merge stage, an identity other than the one that opens pull requests. Required only when
-      the config has a merge stage.
+      the config has a merge stage and no GitHub App is given.
+    required: false
+    default: ''
+  app-id:
+    description: >-
+      The id of the pipeline's GitHub App (ADR 0005), which merges and, with `approve`, reviews. Give it with
+      app-private-key; it takes the place of merge-token.
+    required: false
+    default: ''
+  app-private-key:
+    description: The private key (PEM) of the pipeline's GitHub App. Keep it in a secret.
     required: false
     default: ''
   config:

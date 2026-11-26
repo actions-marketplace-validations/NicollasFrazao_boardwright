@@ -128,6 +128,9 @@ export interface ReviewDraft {
   readonly headSha: string;
   readonly body: string;
   readonly comments: readonly ReviewComment[];
+
+  /** How the review is submitted: a comment, or, when the stage approves, an approval or a change request. */
+  readonly event: 'comment' | 'approve' | 'request-changes';
 }
 
 /** What the pipeline asks the repository host to open. */
@@ -173,8 +176,8 @@ export interface RepoHostPort {
   /** The unresolved review threads and the failing checks of the head commit of a pull request. */
   getFeedback(repository: string, number: number): Promise<Feedback>;
 
-  /** Marks a review thread resolved; only the pipeline does this, for threads the agent addressed. */
-  resolveThread(threadId: string): Promise<void>;
+  /** Marks a review thread of the repository resolved; only the pipeline does this, for threads the agent addressed. */
+  resolveThread(repository: string, threadId: string): Promise<void>;
 
   /** What the merge policy looks at, read fresh from the pull request. */
   getMergeFacts(repository: string, number: number): Promise<MergeFacts>;
@@ -233,6 +236,17 @@ export interface AgentRequest {
   readonly timeoutMs: number;
   readonly deniedPaths: readonly string[];
   readonly model: string | undefined;
+}
+
+/** A GitHub App's installation on a repository: the permissions it was granted, by name. */
+export interface AppInstallation {
+  readonly permissions: Readonly<Record<string, string>>;
+}
+
+/** The pipeline's GitHub App (ADR 0005), as `doctor` reads it. */
+export interface AppInstallationsPort {
+  /** The App's installation on the repository; `undefined` when it is not installed there. */
+  installationOf(repository: string): Promise<AppInstallation | undefined>;
 }
 
 /** How an agent session ended. */

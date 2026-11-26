@@ -44,6 +44,22 @@ describe('actionCommand', () => {
     expect(command.environment.BOARDWRIGHT_MERGE_TOKEN).toBe('ghp_merge');
   });
 
+  it('passes the GitHub App\'s id and key under the names the CLI reads', () => {
+    const command = actionCommand({
+      ...BASE,
+      'INPUT_APP-ID': ' 5925672 ',
+      'INPUT_APP-PRIVATE-KEY': '-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----\n',
+    });
+
+    expect(command.environment).toMatchObject({
+      BOARDWRIGHT_APP_ID: '5925672',
+      BOARDWRIGHT_APP_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----',
+    });
+
+    expect(command.environment).not.toHaveProperty('INPUT_APP-PRIVATE-KEY');
+    expect(actionCommand(BASE).environment).not.toHaveProperty('BOARDWRIGHT_APP_ID');
+  });
+
   it('leaves out every input and the credentials of the Actions runtime', () => {
     const command = actionCommand({
       ...BASE,

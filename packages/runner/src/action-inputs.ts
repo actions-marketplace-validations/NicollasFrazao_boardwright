@@ -85,6 +85,18 @@ export function actionCommand(variables: Readonly<Record<string, string | undefi
     environment.BOARDWRIGHT_MERGE_TOKEN = mergeToken;
   }
 
+  // The pipeline's GitHub App (ADR 0005); the CLI refuses an id without its key.
+  const appId = input('app-id');
+  const appKey = input('app-private-key');
+
+  if (appId !== '') {
+    environment.BOARDWRIGHT_APP_ID = appId;
+  }
+
+  if (appKey !== '') {
+    environment.BOARDWRIGHT_APP_PRIVATE_KEY = appKey;
+  }
+
   const runnerTemp = variables.RUNNER_TEMP;
 
   if (

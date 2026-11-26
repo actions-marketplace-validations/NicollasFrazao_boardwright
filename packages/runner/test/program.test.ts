@@ -13,6 +13,7 @@ import {
   runProgram,
   USAGE,
   type ProgramEnvironment,
+  type AppCredentials,
 } from '../src/program.ts';
 
 const CONFIG = `project:
@@ -32,6 +33,9 @@ interface TestEnvironment extends ProgramEnvironment {
   readonly out: string[];
   readonly err: string[];
   readonly tokens: string[];
+  readonly apps: AppCredentials[];
+  readonly reviewers: AppCredentials[];
+  readonly commands: Set<string>;
 }
 
 function environment(
@@ -48,12 +52,22 @@ function environment(
   const out: string[] = [];
   const err: string[] = [];
   const tokens: string[] = [];
+  const apps: AppCredentials[] = [];
+  const reviewers: AppCredentials[] = [];
+
+  const commands = new Set([
+    'bwrap',
+    'socat',
+  ]);
 
   return {
     files,
     out,
     err,
     tokens,
+    apps,
+    reviewers,
+    commands,
     version: '1.2.3',
     variables,
     readFile: (path) => Promise.resolve(files.get(path)),
@@ -90,6 +104,21 @@ function environment(
     stdout: (text) => out.push(text),
     stderr: (text) => err.push(text),
     connectMerger: () => world.merger,
+    platform: 'linux',
+    hasCommand: (name) => Promise.resolve(commands.has(name)),
+    inspectApp: () => ({
+      installationOf: (repository) => Promise.resolve(repository === 'acme/app' ? {
+        permissions: {
+          contents: 'write',
+          pull_requests: 'write',
+        },
+      } : undefined),
+    }),
+    connectAppMerger: (credentials) => {
+      apps.push(credentials);
+
+      return world.merger;
+    },
     shutdownSignal: () => shutdown.signal,
     sleep: () => {
       shutdown.abort();
@@ -116,8 +145,13 @@ function environment(
     connect: (
       _config,
       token,
+      app,
     ) => {
       tokens.push(token);
+
+      if (app !== undefined) {
+        reviewers.push(app);
+      }
 
       return {
         board: world.board,
@@ -139,6 +173,53 @@ describe('boardwright doctor', () => {
     expect(env.out.join('\n')).toContain('ok    board acme#3: "Roadmap", Status: Todo, Ready, In Progress, In review, Done.');
     expect(env.out.join('\n')).toContain(' failures.');
     expect(env.tokens).toEqual(['secret']);
+  });
+
+  it('fails when the agent sandbox cannot run on this machine, and skips it when the sandbox is off', async () => {
+    const env = environment();
+
+    env.commands.delete('socat');
+
+    expect(await runProgram(
+      ['doctor'],
+      env,
+    )).toBe(EXIT.failed);
+
+    expect(env.out.join('\n')).toContain('FAIL  agent sandbox: socat not found');
+
+    const off = environment();
+
+    off.commands.clear();
+
+    off.files.set(
+      'pipeline.config.yml',
+      `${CONFIG}provider:\n  sandbox:\n    enabled: false\n`,
+    );
+
+    expect(await runProgram(
+      ['doctor'],
+      off,
+    )).toBe(EXIT.ok);
+
+    expect(off.out.join('\n')).not.toContain('agent sandbox');
+  });
+
+  it('checks the GitHub App\'s installation when one is configured', async () => {
+    const env = environment(
+      scenario(),
+      {
+        GITHUB_TOKEN: 'secret',
+        BOARDWRIGHT_APP_ID: '1',
+        BOARDWRIGHT_APP_PRIVATE_KEY: 'PEM',
+      },
+    );
+
+    await runProgram(
+      ['doctor'],
+      env,
+    );
+
+    expect(env.out.join('\n')).toContain('warn  acme/app GitHub App: The App lacks issues: write, checks: read');
   });
 
   it('reads each repository\'s context base remotely', async () => {
@@ -573,6 +654,102 @@ describe('boardwright once with a merge stage', () => {
     expect(env.err[0]).toContain('BOARDWRIGHT_MERGE_TOKEN');
   });
 
+  it('merges as the GitHub App when it is configured, with its key read from the file only when used', async () => {
+    const env = environment(
+      scenario(),
+      {
+        GITHUB_TOKEN: 'secret',
+        BOARDWRIGHT_MERGE_TOKEN: 'merge-secret',
+        BOARDWRIGHT_APP_ID: '5925672',
+        BOARDWRIGHT_APP_PRIVATE_KEY_FILE: 'app.pem',
+      },
+    );
+
+    env.files.set(
+      'pipeline.config.yml',
+      MERGE_CONFIG,
+    );
+
+    env.files.set(
+      'app.pem',
+      'PEM',
+    );
+
+    expect(await runProgram(
+      ['once'],
+      env,
+    )).toBe(EXIT.ok);
+
+    expect(env.apps.map((app) => app.appId)).toEqual(['5925672']);
+    expect(await env.apps[0]?.privateKey()).toBe('PEM');
+  });
+
+  it('takes the App key from the environment, and fails clearly on a missing key file', async () => {
+    const env = environment(
+      scenario(),
+      {
+        GITHUB_TOKEN: 'secret',
+        BOARDWRIGHT_APP_ID: '1',
+        BOARDWRIGHT_APP_PRIVATE_KEY: 'PEM-FROM-SECRET',
+      },
+    );
+
+    env.files.set(
+      'pipeline.config.yml',
+      MERGE_CONFIG,
+    );
+
+    await runProgram(
+      ['once'],
+      env,
+    );
+
+    expect(await env.apps[0]?.privateKey()).toBe('PEM-FROM-SECRET');
+
+    const missing = environment(
+      scenario(),
+      {
+        GITHUB_TOKEN: 'secret',
+        BOARDWRIGHT_APP_ID: '1',
+        BOARDWRIGHT_APP_PRIVATE_KEY_FILE: 'nowhere.pem',
+      },
+    );
+
+    missing.files.set(
+      'pipeline.config.yml',
+      MERGE_CONFIG,
+    );
+
+    await runProgram(
+      ['once'],
+      missing,
+    );
+
+    await expect(missing.apps[0]?.privateKey()).rejects.toThrow('The GitHub App key nowhere.pem does not exist.');
+  });
+
+  it('refuses an App id without a key', async () => {
+    const env = environment(
+      scenario(),
+      {
+        GITHUB_TOKEN: 'secret',
+        BOARDWRIGHT_APP_ID: '1',
+      },
+    );
+
+    env.files.set(
+      'pipeline.config.yml',
+      MERGE_CONFIG,
+    );
+
+    expect(await runProgram(
+      ['once'],
+      env,
+    )).toBe(EXIT.usage);
+
+    expect(env.err[0]).toContain('BOARDWRIGHT_APP_PRIVATE_KEY_FILE');
+  });
+
   it('runs with the merge token, and plans without one in a dry run', async () => {
     const env = environment(
       scenario(),
@@ -606,6 +783,49 @@ describe('boardwright once with a merge stage', () => {
       ],
       dry,
     )).toBe(EXIT.ok);
+  });
+});
+
+describe('boardwright once with an approving review stage', () => {
+  const APPROVING = `${CONFIG}  - id: review\n    approve: true\n`;
+
+  it('refuses to approve without a GitHub App', async () => {
+    const env = environment();
+
+    env.files.set(
+      'pipeline.config.yml',
+      APPROVING,
+    );
+
+    expect(await runProgram(
+      ['once'],
+      env,
+    )).toBe(EXIT.usage);
+
+    expect(env.err[0]).toContain('approves only as a GitHub App');
+  });
+
+  it('gives the App to the repository host, which submits the reviews as the App', async () => {
+    const env = environment(
+      scenario(),
+      {
+        GITHUB_TOKEN: 'secret',
+        BOARDWRIGHT_APP_ID: '5925672',
+        BOARDWRIGHT_APP_PRIVATE_KEY: 'PEM',
+      },
+    );
+
+    env.files.set(
+      'pipeline.config.yml',
+      APPROVING,
+    );
+
+    expect(await runProgram(
+      ['once'],
+      env,
+    )).toBe(EXIT.ok);
+
+    expect(env.reviewers.map((app) => app.appId)).toEqual(['5925672']);
   });
 });
 

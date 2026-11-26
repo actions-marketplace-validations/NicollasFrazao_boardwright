@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import {
+  dirname,
   isAbsolute,
   join,
   relative,
@@ -55,6 +56,7 @@ export const DENIED_TOOLS: readonly string[] = [
 export const TOKEN_VARIABLES: readonly string[] = [
   'BOARDWRIGHT_GITHUB_TOKEN',
   'BOARDWRIGHT_MERGE_TOKEN',
+  'BOARDWRIGHT_APP_PRIVATE_KEY',
   'GITHUB_TOKEN',
   'GH_TOKEN',
 ];
@@ -221,11 +223,32 @@ export interface ClaudeProviderOptions {
   readonly sandbox?: AgentSandbox;
 }
 
-/** Whether the agent's shell commands run in the SDK's sandbox, and the hosts they may reach. */
+/** Whether the agent's shell commands run in the SDK's sandbox, the hosts they may reach, and Unix sockets. */
 export interface AgentSandbox {
   readonly enabled: boolean;
   readonly allowedDomains: readonly string[];
+  readonly allowUnixSockets?: boolean;
 }
+
+/**
+ * Unix sockets a sandboxed command must never reach, even when sockets are allowed: Docker and containerd
+ * (root on the host), the user's runtime directories (the Claude sessions, D-Bus, GnuPG and SSH agents),
+ * the system D-Bus, X11 and snapd. On Linux the sandbox cannot filter sockets by path, so they are hidden
+ * from the files instead.
+ */
+export const DANGEROUS_SOCKET_PATHS: readonly string[] = [
+  '/var/run/docker.sock',
+  '/run/docker.sock',
+  '/run/containerd',
+  '/var/run/containerd',
+  '/run/user',
+  '/run/dbus',
+  '/var/run/dbus',
+  // eslint-disable-next-line sonarjs/publicly-writable-directories -- a path hidden from the agent, never written to
+  '/tmp/.X11-unix',
+  '/run/snapd.socket',
+  '/run/snapd-snap.socket',
+];
 
 /**
  * The Claude provider: one Claude Agent SDK session per stage run.
@@ -343,7 +366,12 @@ export class ClaudeAgentProvider implements AgentProvider {
         }],
       },
       mcpServers,
-      ...this.sandbox?.enabled === true ? { sandbox: sandboxSettings(this.sandbox) } : {},
+      ...this.sandbox?.enabled === true ? {
+        sandbox: sandboxSettings(
+          this.sandbox,
+          this.environment,
+        ),
+      } : {},
       env: withoutTokens(this.environment),
       abortController: abort,
       persistSession: false,
@@ -507,19 +535,44 @@ function deny(reason: string): HookJSONOutput {
 
 /**
  * The SDK's sandbox for the agent's shell commands: no credential file, only the listed hosts, and no
- * retry outside the sandbox.
+ * retry outside the sandbox. With `allowUnixSockets`, commands may connect to Unix sockets, and the
+ * dangerous ones (and the SSH agent's directory) are hidden.
  *
  * @remarks
  * The SDK refuses to start the session when the sandbox cannot run (bubblewrap and socat on Linux), rather
  * than run the commands unsandboxed.
  */
-export function sandboxSettings(sandbox: AgentSandbox): SandboxSettings {
+export function sandboxSettings(
+  sandbox: AgentSandbox,
+  environment: Readonly<Record<string, string | undefined>> = {},
+): SandboxSettings {
+  if (sandbox.allowUnixSockets !== true) {
+    return {
+      enabled: true,
+      failIfUnavailable: true,
+      allowUnsandboxedCommands: false,
+      filesystem: { denyRead: [...CREDENTIAL_PATHS] },
+      network: { allowedDomains: [...sandbox.allowedDomains] },
+    };
+  }
+
+  const sshAgent = environment.SSH_AUTH_SOCK;
+
   return {
     enabled: true,
     failIfUnavailable: true,
     allowUnsandboxedCommands: false,
-    filesystem: { denyRead: [...CREDENTIAL_PATHS] },
-    network: { allowedDomains: [...sandbox.allowedDomains] },
+    filesystem: {
+      denyRead: [
+        ...CREDENTIAL_PATHS,
+        ...DANGEROUS_SOCKET_PATHS,
+        ...sshAgent === undefined || sshAgent === '' ? [] : [dirname(sshAgent)],
+      ],
+    },
+    network: {
+      allowedDomains: [...sandbox.allowedDomains],
+      allowAllUnixSockets: true,
+    },
   };
 }
 

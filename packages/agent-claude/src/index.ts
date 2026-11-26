@@ -1,6 +1,7 @@
 export {
   ClaudeAgentProvider,
   CREDENTIAL_PATHS,
+  DANGEROUS_SOCKET_PATHS,
   DENIED_TOOLS,
   guardTools,
   PLAN_REPORT_SCHEMA,

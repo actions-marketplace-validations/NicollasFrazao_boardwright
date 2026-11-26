@@ -21,6 +21,7 @@ import {
 import {
   ClaudeAgentProvider,
   CREDENTIAL_PATHS,
+  DANGEROUS_SOCKET_PATHS,
   guardTools,
   PLAN_REPORT_SCHEMA,
   REPORT_SCHEMA,
@@ -695,6 +696,42 @@ describe('ClaudeAgentProvider: the sandbox', () => {
       '~/.config/boardwright',
       '~/.ssh',
     ]));
+  });
+
+  it('lets commands reach Unix sockets only when asked, hiding the dangerous ones and the SSH agent', () => {
+    const settings = sandboxSettings(
+      {
+        ...sandbox,
+        allowUnixSockets: true,
+      },
+      { SSH_AUTH_SOCK: '/home/someone/.ssh-agent/agent.42' },
+    );
+
+    expect(settings.network).toEqual({
+      allowedDomains: ['registry.npmjs.org'],
+      allowAllUnixSockets: true,
+    });
+
+    expect(settings.filesystem?.denyRead).toEqual([
+      ...CREDENTIAL_PATHS,
+      ...DANGEROUS_SOCKET_PATHS,
+      '/home/someone/.ssh-agent',
+    ]);
+
+    expect(DANGEROUS_SOCKET_PATHS).toEqual(expect.arrayContaining([
+      '/var/run/docker.sock',
+      '/run/user',
+    ]));
+
+    expect(sandboxSettings({
+      ...sandbox,
+      allowUnixSockets: true,
+    }).filesystem?.denyRead).toEqual([
+      ...CREDENTIAL_PATHS,
+      ...DANGEROUS_SOCKET_PATHS,
+    ]);
+
+    expect(sandboxSettings(sandbox).network).not.toHaveProperty('allowAllUnixSockets');
   });
 
   it.each([

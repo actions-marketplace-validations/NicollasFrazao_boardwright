@@ -136,9 +136,14 @@ describe('the address-feedback stage', () => {
       'denied',
     ],
     [
-      'the agent committed nothing',
+      'the agent committed nothing and addressed no thread',
       (world: Scenario) => {
         world.workspaces.committed = false;
+
+        world.agent.result = {
+          ...world.agent.result,
+          addressedThreadIds: ['PRRT_unknown'],
+        };
       },
       'failed',
     ],
@@ -156,6 +161,24 @@ describe('the address-feedback stage', () => {
     expect(report.entries[0]?.result).toMatchObject({ outcome: { event } });
     expect(world.workspaces.pushed).toEqual([]);
     expect(world.repoHost.resolvedThreads).toEqual([]);
+  });
+
+  it('resolves the threads that need no change without pushing, when the agent commits nothing', async () => {
+    const world = feedbackWorld();
+
+    world.workspaces.committed = false;
+
+    const report = await tick(world.dependencies);
+
+    expect(report.entries[0]?.result).toMatchObject({
+      outcome: {
+        event: 'succeeded',
+        detail: expect.stringContaining('Pushed nothing to https://github.com/acme/app/pull/9: no change was needed; resolved 1 of 2') as unknown,
+      },
+    });
+
+    expect(world.workspaces.pushed).toEqual([]);
+    expect(world.repoHost.resolvedThreads).toEqual(['PRRT_1']);
   });
 
   it('handles a pull request that closed or was cleaned up between planning and running', async () => {

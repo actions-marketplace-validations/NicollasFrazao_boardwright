@@ -5,7 +5,10 @@ import {
   diagnose,
   tick,
   type AgentProvider,
+  type AppInstallationsPort,
   type BoardPort,
+  type DoctorCheck,
+  type DoctorReport,
   type Logger,
   type MergerPort,
   type PipelineConfig,
@@ -53,7 +56,8 @@ export interface ProgramEnvironment {
   stderr(text: string): void;
 
   /** The adapters that read and write the board and the repositories. */
-  connect(config: PipelineConfig, token: string): GitHubAdapters;
+  /** The board and the repository host; with a GitHub App, the host submits reviews as the App (ADR 0005). */
+  connect(config: PipelineConfig, token: string, app?: AppCredentials): GitHubAdapters;
 
   /** The adapters that act: the workspaces and the agent. Only `once` without `--dry-run` asks for them. */
   connectAgents(config: PipelineConfig, token: string): AgentAdapters;
@@ -69,6 +73,24 @@ export interface ProgramEnvironment {
 
   /** The merger, on its own token. Only `once` without `--dry-run` with a merge stage asks for it. */
   connectMerger(token: string): MergerPort;
+
+  /** The merger as a GitHub App (ADR 0005); preferred over the merge token when the App is configured. */
+  connectAppMerger(credentials: AppCredentials): MergerPort;
+
+  /** The App's installations, for `doctor`. */
+  inspectApp(credentials: AppCredentials): AppInstallationsPort;
+
+  /** The operating system, as `process.platform` names it. */
+  readonly platform: string;
+
+  /** Whether a command is on the `PATH`, for `doctor`'s machine checks. */
+  hasCommand(name: string): Promise<boolean>;
+}
+
+/** A GitHub App's id and a way to read its private key on first use. */
+export interface AppCredentials {
+  readonly appId: string;
+  readonly privateKey: () => Promise<string>;
 }
 
 interface GitHubAdapters {
@@ -313,20 +335,78 @@ async function doctor(
     tokenFrom(environment),
   );
 
+  const app = appCredentials(environment);
+
   const report = await diagnose({
     config,
     board,
     repoHost,
     context: new RepositoryContextProvider(repositoryFiles(repoHost)),
+    ...app === undefined ? {} : { app: environment.inspectApp(app) },
   });
 
+  const sandbox = await checkSandbox(
+    environment,
+    config,
+  );
+
+  const full: DoctorReport = {
+    checks: [
+      ...report.checks,
+      ...sandbox,
+    ],
+    hasFailures: report.hasFailures || sandbox.some((check) => check.status === 'fail'),
+  };
+
   environment.stdout(options.json ? JSON.stringify(
-    report,
+    full,
     null,
     2,
-  ) : formatDoctor(report));
+  ) : formatDoctor(full));
 
-  return report.hasFailures ? EXIT.failed : EXIT.ok;
+  return full.hasFailures ? EXIT.failed : EXIT.ok;
+}
+
+/** What the agent's sandbox needs on Linux: bubblewrap isolates the files, socat relays the network. */
+const SANDBOX_COMMANDS: readonly string[] = [
+  'bwrap',
+  'socat',
+];
+
+/**
+ * Whether this machine can run the agent's sandbox (`provider.sandbox`): on Linux a session refuses to
+ * start without bubblewrap and socat, so their absence is a failure here, before any run.
+ */
+async function checkSandbox(
+  environment: ProgramEnvironment,
+  config: PipelineConfig,
+): Promise<DoctorCheck[]> {
+  if (
+    !config.provider.sandbox.enabled
+    || environment.platform !== 'linux'
+  ) {
+    return [];
+  }
+
+  const missing: string[] = [];
+
+  for (const name of SANDBOX_COMMANDS) {
+    if (!await environment.hasCommand(name)) {
+      missing.push(name);
+    }
+  }
+
+  return [
+    missing.length === 0 ? {
+      subject: 'agent sandbox',
+      status: 'ok',
+      detail: 'bubblewrap and socat are installed.',
+    } : {
+      subject: 'agent sandbox',
+      status: 'fail',
+      detail: `${missing.join(' and ')} not found: agent sessions will refuse to start. Install bubblewrap and socat (sudo apt install bubblewrap socat), or set provider.sandbox.enabled: false.`,
+    },
+  ];
 }
 
 async function once(
@@ -412,12 +492,19 @@ function tickDependencies(
   isDryRun: boolean,
 ): TickDependencies {
   const token = tokenFrom(environment);
+  const app = appCredentials(environment);
+
+  checkApprovingReview(
+    config,
+    app,
+  );
 
   return {
     config,
     ...environment.connect(
       config,
       token,
+      app,
     ),
     ...isDryRun ? dryRunAdapters() : environment.connectAgents(
       config,
@@ -426,6 +513,7 @@ function tickDependencies(
     merger: isDryRun ? dryRunMerger() : mergerFor(
       environment,
       config,
+      app,
     ),
     context: new RepositoryContextProvider(),
     clock: { now: () => new Date() },
@@ -535,15 +623,21 @@ function dryRunMerger(): MergerPort {
 }
 
 /**
- * The merger for a config with a merge stage, on `BOARDWRIGHT_MERGE_TOKEN`.
+ * The merger for a config with a merge stage: the GitHub App when `BOARDWRIGHT_APP_ID` is set (ADR 0005),
+ * else `BOARDWRIGHT_MERGE_TOKEN`.
  *
- * @throws {@link UsageError} when the config has a merge stage and the token is missing: the identity that
- * merges must not be the one that opened the pull request.
+ * @throws {@link UsageError} when the config has a merge stage and neither is set, or the App has no key:
+ * the identity that merges must not be the one that opened the pull request.
  */
 function mergerFor(
   environment: ProgramEnvironment,
   config: PipelineConfig,
+  app: AppCredentials | undefined,
 ): MergerPort {
+  if (app !== undefined) {
+    return environment.connectAppMerger(app);
+  }
+
   const token = environment.variables.BOARDWRIGHT_MERGE_TOKEN;
 
   if (
@@ -551,13 +645,83 @@ function mergerFor(
     || token === ''
   ) {
     if (config.stages.some((stage) => stage.id === 'merge')) {
-      throw new UsageError('The merge stage needs BOARDWRIGHT_MERGE_TOKEN, a token other than the one that opens pull requests.');
+      throw new UsageError('The merge stage needs a GitHub App (BOARDWRIGHT_APP_ID with its key) or BOARDWRIGHT_MERGE_TOKEN, a token other than the one that opens pull requests.');
     }
 
     return { merge: () => Promise.reject(new Error('No merge stage is configured.')) };
   }
 
   return environment.connectMerger(token);
+}
+
+/**
+ * A review stage that approves needs the GitHub App: GitHub does not let the token that opened the pull
+ * request approve it.
+ *
+ * @throws {@link UsageError} when the config has an approving review stage and no App.
+ */
+function checkApprovingReview(
+  config: PipelineConfig,
+  app: AppCredentials | undefined,
+): void {
+  if (
+    app === undefined
+    && config.stages.some((stage) => stage.id === 'review' && stage.approve)
+  ) {
+    throw new UsageError('The review stage approves only as a GitHub App: set BOARDWRIGHT_APP_ID with its key, or drop `approve`.');
+  }
+}
+
+/**
+ * The GitHub App of `BOARDWRIGHT_APP_ID`, with its key from `BOARDWRIGHT_APP_PRIVATE_KEY` (the PEM, as CI
+ * secrets hold it) or `BOARDWRIGHT_APP_PRIVATE_KEY_FILE` (a path, for a local runner); `undefined` without
+ * an App id.
+ *
+ * @throws {@link UsageError} when the App id is set without a key.
+ */
+function appCredentials(environment: ProgramEnvironment): AppCredentials | undefined {
+  const {
+    BOARDWRIGHT_APP_ID: appId,
+    BOARDWRIGHT_APP_PRIVATE_KEY: key,
+    BOARDWRIGHT_APP_PRIVATE_KEY_FILE: keyFile,
+  } = environment.variables;
+
+  if (
+    appId === undefined
+    || appId === ''
+  ) {
+    return undefined;
+  }
+
+  if (
+    key !== undefined
+    && key !== ''
+  ) {
+    return {
+      appId,
+      privateKey: () => Promise.resolve(key),
+    };
+  }
+
+  if (
+    keyFile === undefined
+    || keyFile === ''
+  ) {
+    throw new UsageError('BOARDWRIGHT_APP_ID needs the App\'s key: BOARDWRIGHT_APP_PRIVATE_KEY_FILE or BOARDWRIGHT_APP_PRIVATE_KEY.');
+  }
+
+  return {
+    appId,
+    privateKey: async () => {
+      const text = await environment.readFile(keyFile);
+
+      if (text === undefined) {
+        throw new Error(`The GitHub App key ${keyFile} does not exist.`);
+      }
+
+      return text;
+    },
+  };
 }
 
 function silentLogger(): Logger {

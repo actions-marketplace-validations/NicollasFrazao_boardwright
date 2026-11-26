@@ -135,25 +135,39 @@ async function addressIn(
     );
   }
 
-  if (!await dependencies.workspaces.hasCommits(round.workspace)) {
+  // Only the threads that were in the feedback the agent read are resolved, whatever else it names.
+  const known = new Set(round.feedback.threads.map((thread) => thread.id));
+  const addressed = [...new Set(result.addressedThreadIds)].filter((id) => known.has(id));
+  const hasCommits = await dependencies.workspaces.hasCommits(round.workspace);
+
+  // A thread can need no change (a nit the reviewer itself waved through); the agent then commits nothing
+  // and names it, and resolving it is the whole round. Nothing committed and nothing addressed is a failure.
+  if (
+    !hasCommits
+    && addressed.length === 0
+  ) {
     return outcome(
       'failed',
-      'The agent committed nothing, so there is nothing to push.',
+      'The agent committed nothing and addressed no thread, so there is nothing to push or resolve.',
     );
   }
 
-  await dependencies.workspaces.push(round.workspace);
-
-  const known = new Set(round.feedback.threads.map((thread) => thread.id));
-  const resolved = [...new Set(result.addressedThreadIds)].filter((id) => known.has(id));
-
-  for (const threadId of resolved) {
-    await dependencies.repoHost.resolveThread(threadId);
+  if (hasCommits) {
+    await dependencies.workspaces.push(round.workspace);
   }
+
+  for (const threadId of addressed) {
+    await dependencies.repoHost.resolveThread(
+      round.workspace.repository,
+      threadId,
+    );
+  }
+
+  const done = hasCommits ? `Pushed fixes to ${round.pullRequestUrl}` : `Pushed nothing to ${round.pullRequestUrl}: no change was needed`;
 
   return outcome(
     'succeeded',
-    `Pushed fixes to ${round.pullRequestUrl}; resolved ${resolved.length} of ${round.feedback.threads.length} review threads.\n\n${result.summary}`,
+    `${done}; resolved ${addressed.length} of ${round.feedback.threads.length} review threads.\n\n${result.summary}`,
   );
 }
 

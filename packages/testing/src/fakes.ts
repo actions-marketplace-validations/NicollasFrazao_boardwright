@@ -302,7 +302,10 @@ export class FakeRepoHost implements RepoHostPort {
   }
 
   /** Records the thread and takes it out of the stored feedback. */
-  resolveThread(threadId: string): Promise<void> {
+  resolveThread(
+    _repository: string,
+    threadId: string,
+  ): Promise<void> {
     this.resolvedThreads.push(threadId);
 
     for (const [

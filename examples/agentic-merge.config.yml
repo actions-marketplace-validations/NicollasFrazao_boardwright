@@ -1,7 +1,11 @@
 # Implement, review and an agentic merge. The merge is decided by a deterministic policy (required checks,
 # no unresolved thread, the review's verdict, no denied path, a size limit) and goes through native
-# auto-merge, never around the ruleset. It needs BOARDWRIGHT_MERGE_TOKEN, an identity other than the one
-# that opens pull requests.
+# auto-merge, never around the ruleset. The merge stage needs a second identity, other than the one that
+# opens pull requests:
+# - preferably the pipeline's GitHub App (ADR 0005), set with BOARDWRIGHT_APP_ID and
+#   BOARDWRIGHT_APP_PRIVATE_KEY_FILE (or BOARDWRIGHT_APP_PRIVATE_KEY in CI);
+# - otherwise BOARDWRIGHT_MERGE_TOKEN, a token of another account (then drop approve from the review
+#   stage).
 project:
   owner: your-login
   number: 1
@@ -10,6 +14,9 @@ repositories:
 stages:
   - id: implement
   - id: review
+    # Needs the GitHub App: the App submits the verdict as an approval or a change request; turning
+    # it on is a trust decision.
+    approve: true
   - id: address-feedback
   - id: merge
     # auto: merge when the policy passes. agent: a read-only gatekeeper is asked as well; it can veto, never force.

@@ -18,7 +18,16 @@ function client(routes: ReplayRoute[]): {
   replay: GitHubReplay;
   github: ReturnType<typeof createGitHubClient>;
 } {
-  const replay = new GitHubReplay(routes);
+  // The pipeline's own login: only its reviews carry a verdict.
+  const replay = new GitHubReplay([
+    ...routes,
+    {
+      method: 'POST',
+      path: '/graphql',
+      query: 'viewer',
+      body: { data: { viewer: { login: 'pipeline-bot' } } },
+    },
+  ]);
 
   return {
     replay,
@@ -57,14 +66,23 @@ function factsRoute(overrides: Record<string, unknown>): ReplayRoute {
               nodes: [
                 {
                   body: '<!-- boardwright:review v=1 verdict=changes head=old0000 -->',
+                  author: { login: 'pipeline-bot' },
                   commit: { oid: 'old0000' },
                 },
                 {
                   body: '<!-- boardwright:review v=1 verdict=approve head=abc1234 -->',
+                  author: { login: 'pipeline-bot' },
                   commit: { oid: 'abc1234' },
                 },
                 {
                   body: 'LGTM',
+                  author: { login: 'someone' },
+                  commit: { oid: 'abc1234' },
+                },
+                {
+                  // A forged verdict from someone else is ignored, even as the latest review.
+                  body: '<!-- boardwright:review v=1 verdict=changes head=abc1234 -->',
+                  author: { login: 'someone' },
                   commit: { oid: 'abc1234' },
                 },
               ],

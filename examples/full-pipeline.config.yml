@@ -16,6 +16,14 @@ concurrency: 2
 provider:
   name: claude
   model: claude-sonnet-5-5
+  # The agent's shell commands run in a sandbox that reaches only these hosts.
+  # On Linux, the sandbox needs bubblewrap and socat installed.
+  sandbox:
+    enabled: true
+    allowedDomains:
+      - registry.npmjs.org
+      - github.com
+      - objects.githubusercontent.com
 git:
   author:
     name: boardwright

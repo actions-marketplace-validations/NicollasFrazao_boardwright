@@ -5,7 +5,7 @@ agent role — refine, implement, review, address feedback, and optionally merge
 boardwright moves cards through that flow the way a person would: on a branch, through a pull request,
 under your rulesets and required checks.
 
-> **Status: v0.1.4, early.** The refine, implement, review and address-feedback stages have run end to
+> **Status: v0.1.7, early.** The refine, implement, review and address-feedback stages have run end to
 > end with a real agent on the local runner: [#49](https://github.com/NicollasFrazao/boardwright/issues/49)
 > went from a plan to [#52](https://github.com/NicollasFrazao/boardwright/pull/52), reviewed, fixed and
 > approved. The Action and the merge stage have not yet run with a real agent. The roadmap is
@@ -35,7 +35,7 @@ access to the repository) and moving its card to the Status a stage starts from.
 | --- | --- | --- | --- | --- | --- |
 | `refine` (optional) | Refine | — | Ready | Todo | Reads the code and posts a plan on the issue; changes nothing |
 | `implement` | Ready | In Progress | In review | Todo | Works on its own branch and opens a pull request that closes the issue, assigned to the issue's assignees |
-| `review` | In review | — | — | — | Reviews each new head of the pull request; comments only, never approves |
+| `review` | In review | — | — | — | Reviews each new head of the pull request; comments only, unless `approve` is on |
 | `address-feedback` | In review | — | — | — | Pushes fixes for unresolved review threads and failing checks, then the pipeline resolves the threads it addressed |
 | `merge` (opt-in) | In review | — | — | — | No agent by default: a deterministic policy merges through native auto-merge |
 
@@ -105,10 +105,12 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7          # the repository that holds pipeline.config.yml
-      - uses: NicollasFrazao/boardwright@<commit sha of v0.1.4>   # pin by commit, not by tag
+      - uses: NicollasFrazao/boardwright@<commit sha of v0.1.7>   # pin by commit, not by tag
         with:
           github-token: ${{ secrets.BOARDWRIGHT_GITHUB_TOKEN }}
           # merge-token: ${{ secrets.BOARDWRIGHT_MERGE_TOKEN }}  # only with a merge stage
+          # app-id: ${{ vars.BOARDWRIGHT_APP_ID }}               # the pipeline's GitHub App (ADR 0005), instead of merge-token
+          # app-private-key: ${{ secrets.BOARDWRIGHT_APP_PRIVATE_KEY }}
           # dry-run: true
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -151,6 +153,8 @@ provider:
     enabled: true                # needs bubblewrap and socat on Linux; a session refuses to start without them
     # allowedDomains:            # the hosts commands may reach; default: npm, PyPI, Packagist and GitHub's download hosts
     #   - registry.npmjs.org
+    # allowUnixSockets: false    # true lets commands reach Unix sockets, such as a test database's; Docker and the
+    #                            # session's agents stay hidden (on Linux the sandbox cannot allow one socket by path)
 git:
   # author:                      # who the agent's commits are attributed to; default: git's own config
   #   name: boardwright
@@ -213,6 +217,12 @@ stage, and a `context` that chooses the playbook from the repository's
 A status is written as `when: { status: Ready }`. The Status options must already exist on the board:
 boardwright never creates them, and `doctor` lists the ones that are missing.
 
+The `review` stage only comments by default. With `approve: true` it submits its verdict as an approval or
+a change request, so a ruleset that requires approving reviews can pass without a person. That needs a
+GitHub App (`BOARDWRIGHT_APP_ID` and its key, [ADR 0005](.context/docs/adr/0005-github-app-as-the-pipeline-identity.md)):
+the App submits the reviews, because GitHub does not let the author of a pull request approve it. An
+agent's approval then stands in for a person's review, so turning it on is a trust decision.
+
 ### The merge stage
 
 Off unless the config lists it. The policy is plain code, the same for every provider, and reads the
@@ -221,8 +231,11 @@ label and not the opt-out one, its checks pass, it has no conflict and no unreso
 changed path is denied, it is small enough, and (with `agentApproval`) the pipeline's review of the head
 commit approves. It is merged at the commit that was evaluated, so a push after the evaluation fails the
 merge instead of merging unchecked code. A ruleset that still holds it gets native auto-merge; nothing
-bypasses it. The stage needs `BOARDWRIGHT_MERGE_TOKEN`, an identity other than the one that opened the
-pull request.
+bypasses it. The stage needs an identity other than the one that opened the pull request: a GitHub App
+you register and install on the repositories (`BOARDWRIGHT_APP_ID` with `BOARDWRIGHT_APP_PRIVATE_KEY_FILE`,
+or `BOARDWRIGHT_APP_PRIVATE_KEY` in CI; [ADR 0005](.context/docs/adr/0005-github-app-as-the-pipeline-identity.md)),
+which merges as `<app>[bot]`, or a token of another account, `BOARDWRIGHT_MERGE_TOKEN`. The App wins when both
+are set.
 
 ```yaml
   - id: merge
@@ -243,7 +256,7 @@ pull request.
 - [`examples/full-pipeline.config.yml`](examples/full-pipeline.config.yml) — refine, implement, review and
   address feedback over two repositories; a person merges.
 - [`examples/agentic-merge.config.yml`](examples/agentic-merge.config.yml) — implement, review, address
-  feedback and the merge stage with a gatekeeper.
+  feedback and the merge stage with a gatekeeper; the review approves as the pipeline's GitHub App.
 
 ## Safety model
 

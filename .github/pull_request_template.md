@@ -27,6 +27,7 @@ Closes #
 - [ ] `npm run check:unused`
 - [ ] `npm run test:coverage`
 - [ ] `npm run check:context`
+- [ ] `npm run build:action` (commit `dist/` if it changed)
 
 ## Risks and caveats
 

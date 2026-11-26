@@ -7372,16 +7372,22 @@ var require_dist = __commonJS({
 });
 
 // packages/runner/src/cli.ts
+import { constants } from "node:fs";
 import {
+  access as access2,
   readFile as readFile3,
   writeFile as writeFile2
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join as join4 } from "node:path";
+import {
+  delimiter,
+  join as join4
+} from "node:path";
 
 // packages/agent-claude/src/claude-provider.ts
 import { existsSync } from "node:fs";
 import {
+  dirname,
   isAbsolute,
   join,
   relative
@@ -9551,8 +9557,8 @@ function emoji() {
 }
 var ipv4 = /^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])$/;
 var ipv6 = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))$/;
-var mac = (delimiter) => {
-  const escapedDelim = escapeRegex(delimiter ?? ":");
+var mac = (delimiter2) => {
+  const escapedDelim = escapeRegex(delimiter2 ?? ":");
   return new RegExp(`^(?:[0-9A-F]{2}${escapedDelim}){5}[0-9A-F]{2}$|^(?:[0-9a-f]{2}${escapedDelim}){5}[0-9a-f]{2}$`);
 };
 var cidrv4 = /^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\/([0-9]|[1-2][0-9]|3[0-2])$/;
@@ -27316,6 +27322,11 @@ var reviewStage = external_exports.object({
       external_exports.string().min(1)
     ).default({})
   }).prefault({}),
+  /**
+   * Submits the verdict as an approval or a change request instead of a comment, so a ruleset that requires
+   * approving reviews can pass. It needs a GitHub App (ADR 0005): GitHub does not let the author approve.
+   */
+  approve: external_exports.boolean().default(false),
   ...limitsOverride
 }).strict();
 var addressFeedbackStage = external_exports.object({
@@ -27447,7 +27458,13 @@ var pipelineConfigSchema = external_exports.object({
     /** Runs the agent's shell commands in the provider's sandbox: no credential files, only the listed hosts. */
     sandbox: external_exports.object({
       enabled: external_exports.boolean().default(true),
-      allowedDomains: external_exports.array(external_exports.string().min(1)).default([...DEFAULT_SANDBOX_DOMAINS])
+      allowedDomains: external_exports.array(external_exports.string().min(1)).default([...DEFAULT_SANDBOX_DOMAINS]),
+      /**
+       * Lets commands connect to Unix sockets, such as a test database's. On Linux the sandbox cannot allow
+       * one socket by path, so this allows every socket the files let a command reach, and the provider
+       * hides the dangerous ones (Docker, the session's agents).
+       */
+      allowUnixSockets: external_exports.boolean().default(false)
     }).strict().prefault({})
   }).strict().prefault({}),
   git: external_exports.object({
@@ -28209,21 +28226,28 @@ async function addressIn(dependencies, run3, round) {
       `The change touches denied paths: ${deniedChanges.join(", ")}. Nothing was pushed.`
     );
   }
-  if (!await dependencies.workspaces.hasCommits(round.workspace)) {
+  const known = new Set(round.feedback.threads.map((thread) => thread.id));
+  const addressed = [...new Set(result.addressedThreadIds)].filter((id) => known.has(id));
+  const hasCommits = await dependencies.workspaces.hasCommits(round.workspace);
+  if (!hasCommits && addressed.length === 0) {
     return outcome2(
       "failed",
-      "The agent committed nothing, so there is nothing to push."
+      "The agent committed nothing and addressed no thread, so there is nothing to push or resolve."
     );
   }
-  await dependencies.workspaces.push(round.workspace);
-  const known = new Set(round.feedback.threads.map((thread) => thread.id));
-  const resolved = [...new Set(result.addressedThreadIds)].filter((id) => known.has(id));
-  for (const threadId of resolved) {
-    await dependencies.repoHost.resolveThread(threadId);
+  if (hasCommits) {
+    await dependencies.workspaces.push(round.workspace);
   }
+  for (const threadId of addressed) {
+    await dependencies.repoHost.resolveThread(
+      round.workspace.repository,
+      threadId
+    );
+  }
+  const done = hasCommits ? `Pushed fixes to ${round.pullRequestUrl}` : `Pushed nothing to ${round.pullRequestUrl}: no change was needed`;
   return outcome2(
     "succeeded",
-    `Pushed fixes to ${round.pullRequestUrl}; resolved ${resolved.length} of ${round.feedback.threads.length} review threads.
+    `${done}; resolved ${addressed.length} of ${round.feedback.threads.length} review threads.
 
 ${result.summary}`
   );
@@ -28812,7 +28836,8 @@ async function runReviewStage(dependencies, run3) {
       repository,
       {
         ...result.review,
-        summary: result.summary
+        summary: result.summary,
+        isApproving: run3.stage.id === "review" && run3.stage.approve
       }
     );
     return outcome5(
@@ -28824,7 +28849,15 @@ async function runReviewStage(dependencies, run3) {
   }
 }
 async function postReview(dependencies, pullRequest, repository, review) {
-  const heading = review.verdict === "approve" ? "no changes needed" : "changes needed";
+  const isApproved = review.verdict === "approve";
+  const heading = isApproved ? "no changes needed" : "changes needed";
+  const suggestions = isApproved && review.comments.length > 0 ? [
+    "",
+    "",
+    "**Suggestions** (optional, not blocking):",
+    "",
+    ...review.comments.map((comment) => `- \`${comment.path}:${comment.line}\` ${comment.body}`)
+  ].join("\n") : "";
   await dependencies.repoHost.submitReview({
     repository,
     number: pullRequest.number,
@@ -28835,9 +28868,16 @@ async function postReview(dependencies, pullRequest, repository, review) {
     })}
 **boardwright review** \xB7 ${heading}
 
-${review.summary}`,
-    comments: review.comments
+${review.summary}${suggestions}`,
+    comments: isApproved ? [] : review.comments,
+    event: reviewEvent(review)
   });
+}
+function reviewEvent(review) {
+  if (!review.isApproving) {
+    return "comment";
+  }
+  return review.verdict === "approve" ? "approve" : "request-changes";
 }
 function outcome5(event, detail) {
   return {
@@ -29415,6 +29455,18 @@ function markerComment(marker, text) {
 }
 
 // packages/core/src/application/doctor.ts
+var APP_REQUIRED_PERMISSIONS = {
+  contents: "write",
+  pull_requests: "write"
+};
+var APP_RECOMMENDED_PERMISSIONS = {
+  issues: "write",
+  checks: "read"
+};
+var PERMISSION_RANK = {
+  read: 1,
+  write: 2
+};
 async function diagnose(dependencies) {
   const checks = [];
   checks.push(...await checkBoard(dependencies));
@@ -29423,11 +29475,69 @@ async function diagnose(dependencies) {
       dependencies,
       repository
     ));
+    if (dependencies.app !== void 0) {
+      checks.push(await checkApp(
+        dependencies.app,
+        repository
+      ));
+    }
   }
   return {
     checks,
     hasFailures: checks.some((check3) => check3.status === "fail")
   };
+}
+async function checkApp(app, repository) {
+  const subject = `${repository} GitHub App`;
+  try {
+    const installation = await app.installationOf(repository);
+    if (installation === void 0) {
+      return check2(
+        subject,
+        "fail",
+        "The App is not installed on this repository; add it to the installation's repositories."
+      );
+    }
+    const required2 = missingPermissions(
+      installation,
+      APP_REQUIRED_PERMISSIONS
+    );
+    if (required2.length > 0) {
+      return check2(
+        subject,
+        "fail",
+        `The App lacks ${required2.join(", ")}; it cannot merge or review.`
+      );
+    }
+    const recommended = missingPermissions(
+      installation,
+      APP_RECOMMENDED_PERMISSIONS
+    );
+    return recommended.length > 0 ? check2(
+      subject,
+      "warn",
+      `The App lacks ${recommended.join(", ")}; add them for the pipeline's comments as the App (ADR 0005).`
+    ) : check2(
+      subject,
+      "ok",
+      "Installed with the permissions it needs."
+    );
+  } catch (error62) {
+    return check2(
+      subject,
+      "fail",
+      messageOf(error62)
+    );
+  }
+}
+function missingPermissions(installation, wanted) {
+  return Object.entries(wanted).filter(([
+    name,
+    level
+  ]) => (PERMISSION_RANK[installation.permissions[name] ?? ""] ?? 0) < (PERMISSION_RANK[level] ?? 0)).map(([
+    name,
+    level
+  ]) => `${name}: ${level}`);
 }
 async function checkBoard(dependencies) {
   const { config: config2 } = dependencies;
@@ -29669,6 +29779,7 @@ var DENIED_TOOLS = [
 var TOKEN_VARIABLES = [
   "BOARDWRIGHT_GITHUB_TOKEN",
   "BOARDWRIGHT_MERGE_TOKEN",
+  "BOARDWRIGHT_APP_PRIVATE_KEY",
   "GITHUB_TOKEN",
   "GH_TOKEN"
 ];
@@ -29783,6 +29894,19 @@ var WRITE_TOOLS = [
   "MultiEdit",
   "NotebookEdit"
 ];
+var DANGEROUS_SOCKET_PATHS = [
+  "/var/run/docker.sock",
+  "/run/docker.sock",
+  "/run/containerd",
+  "/var/run/containerd",
+  "/run/user",
+  "/run/dbus",
+  "/var/run/dbus",
+  // eslint-disable-next-line sonarjs/publicly-writable-directories -- a path hidden from the agent, never written to
+  "/tmp/.X11-unix",
+  "/run/snapd.socket",
+  "/run/snapd-snap.socket"
+];
 var ClaudeAgentProvider = class {
   query;
   environment;
@@ -29874,7 +29998,12 @@ var ClaudeAgentProvider = class {
         }]
       },
       mcpServers,
-      ...this.sandbox?.enabled === true ? { sandbox: sandboxSettings(this.sandbox) } : {},
+      ...this.sandbox?.enabled === true ? {
+        sandbox: sandboxSettings(
+          this.sandbox,
+          this.environment
+        )
+      } : {},
       env: withoutTokens(this.environment),
       abortController: abort,
       persistSession: false
@@ -29972,13 +30101,32 @@ function deny(reason) {
     }
   };
 }
-function sandboxSettings(sandbox) {
+function sandboxSettings(sandbox, environment = {}) {
+  if (sandbox.allowUnixSockets !== true) {
+    return {
+      enabled: true,
+      failIfUnavailable: true,
+      allowUnsandboxedCommands: false,
+      filesystem: { denyRead: [...CREDENTIAL_PATHS] },
+      network: { allowedDomains: [...sandbox.allowedDomains] }
+    };
+  }
+  const sshAgent = environment.SSH_AUTH_SOCK;
   return {
     enabled: true,
     failIfUnavailable: true,
     allowUnsandboxedCommands: false,
-    filesystem: { denyRead: [...CREDENTIAL_PATHS] },
-    network: { allowedDomains: [...sandbox.allowedDomains] }
+    filesystem: {
+      denyRead: [
+        ...CREDENTIAL_PATHS,
+        ...DANGEROUS_SOCKET_PATHS,
+        ...sshAgent === void 0 || sshAgent === "" ? [] : [dirname(sshAgent)]
+      ]
+    },
+    network: {
+      allowedDomains: [...sandbox.allowedDomains],
+      allowAllUnixSockets: true
+    }
   };
 }
 function withoutTokens(environment) {
@@ -30390,6 +30538,9 @@ function pendingPaths(output2) {
 function lines(output2) {
   return output2.split("\n").map((line) => line.trim()).filter((line) => line !== "");
 }
+
+// packages/github/src/app-tokens.ts
+import { createSign } from "node:crypto";
 
 // node_modules/universal-user-agent/index.js
 function getUserAgent() {
@@ -34477,6 +34628,131 @@ function isUnprocessable(error62) {
   return typeof error62 === "object" && error62 !== null && "status" in error62 && error62.status === HTTP_UNPROCESSABLE;
 }
 
+// packages/github/src/app-tokens.ts
+var MS_PER_SECOND = 1e3;
+var SECONDS_PER_MINUTE = 60;
+var JWT_BACKDATE_SECONDS = 60;
+var JWT_LIFETIME_SECONDS = 540;
+var RENEW_BEFORE_MINUTES = 5;
+var RENEW_BEFORE_MS = RENEW_BEFORE_MINUTES * SECONDS_PER_MINUTE * MS_PER_SECOND;
+var GitHubAppTokens = class {
+  credentials;
+  fetch;
+  now;
+  installations = /* @__PURE__ */ new Map();
+  tokens = /* @__PURE__ */ new Map();
+  key;
+  constructor(credentials, options = {}) {
+    this.credentials = credentials;
+    this.fetch = options.fetch;
+    this.now = options.now ?? (() => /* @__PURE__ */ new Date());
+  }
+  /** A client that acts as the App's installation on the repository's owner. */
+  async clientFor(repository) {
+    return createGitHubClient({
+      token: await this.tokenFor(repository),
+      ...this.fetch === void 0 ? {} : { fetch: this.fetch }
+    });
+  }
+  /**
+   * An installation token for the repository's owner.
+   *
+   * @throws when the App is not installed on the repository (GitHub's 404).
+   */
+  async tokenFor(repository) {
+    const installation = await this.installationIdOf(repository);
+    const cached2 = this.tokens.get(installation);
+    if (cached2 !== void 0 && cached2.expiresAt - RENEW_BEFORE_MS > this.now().getTime()) {
+      return cached2.token;
+    }
+    const app = await this.appClient();
+    const { data } = await app.rest.apps.createInstallationAccessToken({ installation_id: installation });
+    this.tokens.set(
+      installation,
+      {
+        token: data.token,
+        expiresAt: Date.parse(data.expires_at)
+      }
+    );
+    return data.token;
+  }
+  /**
+   * The App's installation on the repository, with its permissions; `undefined` when it is not installed.
+   * `doctor` reads it.
+   */
+  async installationOf(repository) {
+    const app = await this.appClient();
+    try {
+      const { data } = await app.rest.apps.getRepoInstallation(splitRepository(repository));
+      const permissions = {};
+      for (const [
+        name,
+        level
+      ] of Object.entries(data.permissions)) {
+        if (typeof level === "string") {
+          permissions[name] = level;
+        }
+      }
+      return { permissions };
+    } catch (error62) {
+      if (isNotFound(error62)) {
+        return void 0;
+      }
+      throw error62;
+    }
+  }
+  /** The login the App acts as, `<slug>[bot]`: the author of what it writes. */
+  async botLogin() {
+    const app = await this.appClient();
+    const { data } = await app.rest.apps.getAuthenticated();
+    return `${data?.slug ?? ""}[bot]`;
+  }
+  async installationIdOf(repository) {
+    const { owner } = splitRepository(repository);
+    const known = this.installations.get(owner);
+    if (known !== void 0) {
+      return known;
+    }
+    const { data } = await (await this.appClient()).rest.apps.getRepoInstallation(splitRepository(repository));
+    this.installations.set(
+      owner,
+      data.id
+    );
+    return data.id;
+  }
+  /** A client authenticated as the App itself, with a fresh JWT. */
+  async appClient() {
+    this.key ??= this.credentials.privateKey();
+    return createGitHubClient({
+      token: appJwt(
+        this.credentials.appId,
+        await this.key,
+        this.now()
+      ),
+      ...this.fetch === void 0 ? {} : { fetch: this.fetch }
+    });
+  }
+};
+function appJwt(appId, privateKey, now) {
+  const seconds = Math.floor(now.getTime() / MS_PER_SECOND);
+  const unsigned = [
+    {
+      alg: "RS256",
+      typ: "JWT"
+    },
+    {
+      iat: seconds - JWT_BACKDATE_SECONDS,
+      exp: seconds + JWT_LIFETIME_SECONDS,
+      iss: appId
+    }
+  ].map((part) => Buffer.from(JSON.stringify(part)).toString("base64url")).join(".");
+  const signature = createSign("RSA-SHA256").update(unsigned).sign(
+    privateKey,
+    "base64url"
+  );
+  return `${unsigned}.${signature}`;
+}
+
 // packages/github/src/project-board.ts
 var PROJECT_QUERY = `query($login: String!, $number: Int!, $field: String!) {
   repositoryOwner(login: $login) {
@@ -34769,7 +35045,7 @@ var MERGE_FACTS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
       labels(first: 50) { nodes { name } }
       files(first: 100) { nodes { path } }
       reviewThreads(first: 100) { nodes { isResolved } }
-      reviews(last: 50) { nodes { body commit { oid } } }
+      reviews(last: 50) { nodes { body author { login } commit { oid } } }
       commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
     }
   }
@@ -34822,10 +35098,59 @@ var RECENT_ISSUES_QUERY = `query($owner: String!, $name: String!, $after: String
     }
   }
 }`;
+var VIEWER_QUERY = "query { viewer { login } }";
+function normalizeLogin(login) {
+  return login.replace(
+    /\[bot\]$/u,
+    ""
+  ).toLowerCase();
+}
+var REVIEW_EVENTS = {
+  comment: "COMMENT",
+  approve: "APPROVE",
+  "request-changes": "REQUEST_CHANGES"
+};
 var GitHubRepoHost = class {
   client;
-  constructor(client) {
+  actor;
+  trustedAuthors;
+  trusted;
+  constructor(client, options = {}) {
     this.client = client;
+    this.actor = options.actor;
+    this.trustedAuthors = options.trustedAuthors;
+  }
+  /** The client the pipeline writes as on the repository: its App's installation, else the main client. */
+  async actorFor(repository) {
+    return this.actor === void 0 ? this.client : await this.actor(repository);
+  }
+  /**
+   * Whether a comment or a review by this login may carry the pipeline's markers: only the pipeline's own
+   * identities may, so nobody else can forge a run's history or a review's verdict.
+   */
+  async isTrusted(login) {
+    if (login === void 0) {
+      return false;
+    }
+    this.trusted ??= this.loadTrusted();
+    return (await this.trusted).has(normalizeLogin(login));
+  }
+  async loadTrusted() {
+    const { viewer } = await this.client.graphql(VIEWER_QUERY);
+    return new Set([
+      viewer.login,
+      ...await this.trustedAuthors?.() ?? []
+    ].map(normalizeLogin));
+  }
+  /** The items whose author is one of the pipeline's identities, in their order. */
+  async byPipeline(items, authorOf) {
+    const kept = [];
+    for (const item of items) {
+      if (await this.isTrusted(authorOf(item))) {
+        kept.push(item);
+      }
+    }
+    return kept;
   }
   /** The issue's title, body, label names and whether it is open. */
   async getIssue(ref) {
@@ -34921,7 +35246,11 @@ var GitHubRepoHost = class {
         per_page: 100
       }
     );
-    return comments.map((comment) => ({
+    const ours = await this.byPipeline(
+      comments,
+      (comment) => comment.user?.login
+    );
+    return ours.map((comment) => ({
       id: String(comment.id).padStart(
         COMMENT_ID_WIDTH,
         "0"
@@ -34930,9 +35259,10 @@ var GitHubRepoHost = class {
       createdAt: new Date(comment.created_at)
     }));
   }
-  /** Posts a comment on the issue. */
+  /** Posts a comment on the issue, as the pipeline's actor. */
   async addComment(ref, body) {
-    await this.client.rest.issues.createComment({
+    const client = await this.actorFor(ref.repository);
+    await client.rest.issues.createComment({
       ...splitRepository(ref.repository),
       issue_number: ref.number,
       body
@@ -35020,8 +35350,9 @@ var GitHubRepoHost = class {
     };
   }
   /** Marks a review thread resolved. */
-  async resolveThread(threadId) {
-    await this.client.graphql(
+  async resolveThread(repository, threadId) {
+    const client = await this.actorFor(repository);
+    await client.graphql(
       RESOLVE_THREAD_MUTATION,
       { id: threadId }
     );
@@ -35048,7 +35379,11 @@ var GitHubRepoHost = class {
     );
     const pullRequest = data.repository.pullRequest;
     const headSha = pullRequest.headRefOid;
-    const verdicts = pullRequest.reviews.nodes.filter((review) => review.commit?.oid === headSha).map((review) => parseReviewMarker(review.body)).filter((marker) => marker?.headSha === headSha);
+    const ours = await this.byPipeline(
+      pullRequest.reviews.nodes,
+      (review) => review.author?.login
+    );
+    const verdicts = ours.filter((review) => review.commit?.oid === headSha).map((review) => parseReviewMarker(review.body)).filter((marker) => marker?.headSha === headSha);
     return {
       pullRequestId: pullRequest.id,
       headSha,
@@ -35073,24 +35408,30 @@ var GitHubRepoHost = class {
         per_page: 100
       }
     );
-    return reviews.some((review) => review.commit_id === headSha && parseReviewMarker(review.body)?.headSha === headSha);
+    const ours = await this.byPipeline(
+      reviews,
+      (review) => review.user?.login
+    );
+    return ours.some((review) => review.commit_id === headSha && parseReviewMarker(review.body)?.headSha === headSha);
   }
   /**
-   * Posts a review that only comments, with its line comments.
+   * Posts a review with its line comments, as a comment, an approval or a change request, as the pipeline's
+   * actor.
    *
    * @remarks
    * GitHub rejects the whole review (422) when one comment points at a line outside the diff; the review is
    * then posted again with the comments in its body, so no finding is lost.
    */
   async submitReview(review) {
+    const client = await this.actorFor(review.repository);
     const target = {
       ...splitRepository(review.repository),
       pull_number: review.number,
       commit_id: review.headSha,
-      event: "COMMENT"
+      event: REVIEW_EVENTS[review.event]
     };
     try {
-      await this.client.rest.pulls.createReview({
+      await client.rest.pulls.createReview({
         ...target,
         body: review.body,
         comments: review.comments.map((comment) => ({
@@ -35104,7 +35445,7 @@ var GitHubRepoHost = class {
       if (!isUnprocessable(error62) || review.comments.length === 0) {
         throw error62;
       }
-      await this.client.rest.pulls.createReview({
+      await client.rest.pulls.createReview({
         ...target,
         body: [
           review.body,
@@ -35222,6 +35563,11 @@ var GitHubMerger = class {
     }
   }
 };
+function appMerger(tokens) {
+  return {
+    merge: async (request2) => new GitHubMerger(await tokens.clientFor(request2.repository)).merge(request2)
+  };
+}
 function isMethodNotAllowed(error62) {
   return typeof error62 === "object" && error62 !== null && "status" in error62 && error62.status === HTTP_METHOD_NOT_ALLOWED;
 }
@@ -35312,7 +35658,7 @@ import {
   rm as rm2,
   writeFile
 } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname as dirname2 } from "node:path";
 function isProcessAlive(pid) {
   try {
     process.kill(
@@ -35326,7 +35672,7 @@ function isProcessAlive(pid) {
 }
 async function acquireFileLock(path, pid = process.pid, isAlive = isProcessAlive) {
   await mkdir2(
-    dirname(path),
+    dirname2(path),
     { recursive: true }
   );
   for (let attempt2 = 0; attempt2 < 2; attempt2 += 1) {
@@ -35817,7 +36163,7 @@ var TOKEN_VARIABLES2 = [
   "GITHUB_TOKEN",
   "GH_TOKEN"
 ];
-var MS_PER_SECOND = 1e3;
+var MS_PER_SECOND2 = 1e3;
 var DEFAULT_INTERVAL_SECONDS = 60;
 var MIN_INTERVAL_SECONDS = 10;
 var MAX_BACKOFF_MS = 9e5;
@@ -35971,18 +36317,57 @@ async function doctor(environment, options) {
     config2,
     tokenFrom(environment)
   );
+  const app = appCredentials(environment);
   const report = await diagnose({
     config: config2,
     board,
     repoHost,
-    context: new RepositoryContextProvider(repositoryFiles(repoHost))
+    context: new RepositoryContextProvider(repositoryFiles(repoHost)),
+    ...app === void 0 ? {} : { app: environment.inspectApp(app) }
   });
+  const sandbox = await checkSandbox(
+    environment,
+    config2
+  );
+  const full = {
+    checks: [
+      ...report.checks,
+      ...sandbox
+    ],
+    hasFailures: report.hasFailures || sandbox.some((check3) => check3.status === "fail")
+  };
   environment.stdout(options.json ? JSON.stringify(
-    report,
+    full,
     null,
     2
-  ) : formatDoctor(report));
-  return report.hasFailures ? EXIT.failed : EXIT.ok;
+  ) : formatDoctor(full));
+  return full.hasFailures ? EXIT.failed : EXIT.ok;
+}
+var SANDBOX_COMMANDS = [
+  "bwrap",
+  "socat"
+];
+async function checkSandbox(environment, config2) {
+  if (!config2.provider.sandbox.enabled || environment.platform !== "linux") {
+    return [];
+  }
+  const missing = [];
+  for (const name of SANDBOX_COMMANDS) {
+    if (!await environment.hasCommand(name)) {
+      missing.push(name);
+    }
+  }
+  return [
+    missing.length === 0 ? {
+      subject: "agent sandbox",
+      status: "ok",
+      detail: "bubblewrap and socat are installed."
+    } : {
+      subject: "agent sandbox",
+      status: "fail",
+      detail: `${missing.join(" and ")} not found: agent sessions will refuse to start. Install bubblewrap and socat (sudo apt install bubblewrap socat), or set provider.sandbox.enabled: false.`
+    }
+  ];
 }
 async function once(environment, options) {
   const config2 = await loadConfig(
@@ -36023,7 +36408,7 @@ async function run2(environment, options) {
   }
   try {
     await runDaemon({
-      intervalMs: options.intervalSeconds * MS_PER_SECOND,
+      intervalMs: options.intervalSeconds * MS_PER_SECOND2,
       maxBackoffMs: MAX_BACKOFF_MS,
       signal: environment.shutdownSignal(),
       tick: () => tick(dependencies),
@@ -36040,11 +36425,17 @@ async function run2(environment, options) {
 }
 function tickDependencies(environment, config2, isDryRun) {
   const token = tokenFrom(environment);
+  const app = appCredentials(environment);
+  checkApprovingReview(
+    config2,
+    app
+  );
   return {
     config: config2,
     ...environment.connect(
       config2,
-      token
+      token,
+      app
     ),
     ...isDryRun ? dryRunAdapters() : environment.connectAgents(
       config2,
@@ -36052,7 +36443,8 @@ function tickDependencies(environment, config2, isDryRun) {
     ),
     merger: isDryRun ? dryRunMerger() : mergerFor(
       environment,
-      config2
+      config2,
+      app
     ),
     context: new RepositoryContextProvider(),
     clock: { now: () => /* @__PURE__ */ new Date() },
@@ -36119,15 +36511,52 @@ function dryRunAdapters() {
 function dryRunMerger() {
   return { merge: () => Promise.reject(new Error("A dry run never acts.")) };
 }
-function mergerFor(environment, config2) {
+function mergerFor(environment, config2, app) {
+  if (app !== void 0) {
+    return environment.connectAppMerger(app);
+  }
   const token = environment.variables.BOARDWRIGHT_MERGE_TOKEN;
   if (token === void 0 || token === "") {
     if (config2.stages.some((stage2) => stage2.id === "merge")) {
-      throw new UsageError("The merge stage needs BOARDWRIGHT_MERGE_TOKEN, a token other than the one that opens pull requests.");
+      throw new UsageError("The merge stage needs a GitHub App (BOARDWRIGHT_APP_ID with its key) or BOARDWRIGHT_MERGE_TOKEN, a token other than the one that opens pull requests.");
     }
     return { merge: () => Promise.reject(new Error("No merge stage is configured.")) };
   }
   return environment.connectMerger(token);
+}
+function checkApprovingReview(config2, app) {
+  if (app === void 0 && config2.stages.some((stage2) => stage2.id === "review" && stage2.approve)) {
+    throw new UsageError("The review stage approves only as a GitHub App: set BOARDWRIGHT_APP_ID with its key, or drop `approve`.");
+  }
+}
+function appCredentials(environment) {
+  const {
+    BOARDWRIGHT_APP_ID: appId,
+    BOARDWRIGHT_APP_PRIVATE_KEY: key,
+    BOARDWRIGHT_APP_PRIVATE_KEY_FILE: keyFile
+  } = environment.variables;
+  if (appId === void 0 || appId === "") {
+    return void 0;
+  }
+  if (key !== void 0 && key !== "") {
+    return {
+      appId,
+      privateKey: () => Promise.resolve(key)
+    };
+  }
+  if (keyFile === void 0 || keyFile === "") {
+    throw new UsageError("BOARDWRIGHT_APP_ID needs the App's key: BOARDWRIGHT_APP_PRIVATE_KEY_FILE or BOARDWRIGHT_APP_PRIVATE_KEY.");
+  }
+  return {
+    appId,
+    privateKey: async () => {
+      const text = await environment.readFile(keyFile);
+      if (text === void 0) {
+        throw new Error(`The GitHub App key ${keyFile} does not exist.`);
+      }
+      return text;
+    }
+  };
 }
 function silentLogger() {
   return {
@@ -36162,7 +36591,7 @@ function jsonLogger(environment) {
 }
 
 // package.json
-var package_default = { version: "0.1.4" };
+var package_default = { version: "0.1.7" };
 
 // packages/runner/src/cli.ts
 function hasCode(error62, code) {
@@ -36176,6 +36605,37 @@ function cacheDirectory() {
     ),
     "boardwright"
   );
+}
+async function onPath(name) {
+  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+    if (directory === "") {
+      continue;
+    }
+    try {
+      await access2(
+        join4(
+          directory,
+          name
+        ),
+        constants.X_OK
+      );
+      return true;
+    } catch {
+    }
+  }
+  return false;
+}
+var tokensByApp = /* @__PURE__ */ new WeakMap();
+function appTokens(credentials) {
+  let tokens = tokensByApp.get(credentials);
+  if (tokens === void 0) {
+    tokens = new GitHubAppTokens(credentials);
+    tokensByApp.set(
+      credentials,
+      tokens
+    );
+  }
+  return tokens;
 }
 var shutdown = new AbortController();
 for (const signal of [
@@ -36240,14 +36700,20 @@ process.exitCode = await runProgram(
       process.stderr.write(`${text}
 `);
     },
-    connect: (config2, token) => {
+    connect: (config2, token, app) => {
       const client = createGitHubClient({ token });
       return {
         board: new ProjectBoard(
           client,
           config2.project
         ),
-        repoHost: new GitHubRepoHost(client)
+        repoHost: new GitHubRepoHost(
+          client,
+          app === void 0 ? {} : {
+            actor: (repository) => appTokens(app).clientFor(repository),
+            trustedAuthors: async () => [await appTokens(app).botLogin()]
+          }
+        )
       };
     },
     shutdownSignal: () => shutdown.signal,
@@ -36258,6 +36724,10 @@ process.exitCode = await runProgram(
       `${name}.lock`
     )),
     connectMerger: (token) => new GitHubMerger(createGitHubClient({ token })),
+    connectAppMerger: (credentials) => appMerger(appTokens(credentials)),
+    inspectApp: appTokens,
+    platform: process.platform,
+    hasCommand: (name) => onPath(name),
     connectAgents: (config2, token) => ({
       workspaces: new GitWorkspaces({
         directory: cacheDirectory(),

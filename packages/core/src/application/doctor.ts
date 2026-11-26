@@ -3,6 +3,8 @@ import type {
   StageConfig,
 } from './config.ts';
 import type {
+  AppInstallation,
+  AppInstallationsPort,
   BoardPort,
   ContextProvider,
   RepoHostPort,
@@ -32,7 +34,27 @@ export interface DoctorDependencies {
 
   /** A context provider whose `root` is a repository name (`owner/name`), read remotely. */
   readonly context: ContextProvider;
+
+  /** The pipeline's GitHub App, when one is configured (ADR 0005). */
+  readonly app?: AppInstallationsPort;
 }
+
+/** What the App needs on every repository: it merges and reviews. */
+const APP_REQUIRED_PERMISSIONS: Readonly<Record<string, string>> = {
+  contents: 'write',
+  pull_requests: 'write',
+};
+
+/** What the App will need to write the pipeline's comments and to read checks (ADR 0005). */
+const APP_RECOMMENDED_PERMISSIONS: Readonly<Record<string, string>> = {
+  issues: 'write',
+  checks: 'read',
+};
+
+const PERMISSION_RANK: Readonly<Record<string, number>> = {
+  read: 1,
+  write: 2,
+};
 
 /**
  * Checks a config against the board and the repositories without changing anything.
@@ -51,12 +73,92 @@ export async function diagnose(dependencies: DoctorDependencies): Promise<Doctor
       dependencies,
       repository,
     ));
+
+    if (dependencies.app !== undefined) {
+      checks.push(await checkApp(
+        dependencies.app,
+        repository,
+      ));
+    }
   }
 
   return {
     checks,
     hasFailures: checks.some((check) => check.status === 'fail'),
   };
+}
+
+/**
+ * Whether the App is installed on the repository with what it needs: a missing installation or a missing
+ * required permission fails, a missing recommended one warns.
+ */
+async function checkApp(
+  app: AppInstallationsPort,
+  repository: string,
+): Promise<DoctorCheck> {
+  const subject = `${repository} GitHub App`;
+
+  try {
+    const installation = await app.installationOf(repository);
+
+    if (installation === undefined) {
+      return check(
+        subject,
+        'fail',
+        'The App is not installed on this repository; add it to the installation\'s repositories.',
+      );
+    }
+
+    const required = missingPermissions(
+      installation,
+      APP_REQUIRED_PERMISSIONS,
+    );
+
+    if (required.length > 0) {
+      return check(
+        subject,
+        'fail',
+        `The App lacks ${required.join(', ')}; it cannot merge or review.`,
+      );
+    }
+
+    const recommended = missingPermissions(
+      installation,
+      APP_RECOMMENDED_PERMISSIONS,
+    );
+
+    return recommended.length > 0 ? check(
+      subject,
+      'warn',
+      `The App lacks ${recommended.join(', ')}; add them for the pipeline's comments as the App (ADR 0005).`,
+    ) : check(
+      subject,
+      'ok',
+      'Installed with the permissions it needs.',
+    );
+  } catch (error) {
+    return check(
+      subject,
+      'fail',
+      messageOf(error),
+    );
+  }
+}
+
+/** The permissions below the wanted level, as `name: level`. */
+function missingPermissions(
+  installation: AppInstallation,
+  wanted: Readonly<Record<string, string>>,
+): string[] {
+  return Object.entries(wanted)
+    .filter(([
+      name,
+      level,
+    ]) => (PERMISSION_RANK[installation.permissions[name] ?? ''] ?? 0) < (PERMISSION_RANK[level] ?? 0))
+    .map(([
+      name,
+      level,
+    ]) => `${name}: ${level}`);
 }
 
 async function checkBoard(dependencies: DoctorDependencies): Promise<DoctorCheck[]> {

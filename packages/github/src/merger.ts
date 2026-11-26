@@ -2,6 +2,7 @@ import type {
   MergeRequest,
   MergerPort,
 } from '@boardwright/core';
+import type { GitHubAppTokens } from './app-tokens.ts';
 import {
   splitRepository,
   type GitHubClient,
@@ -58,6 +59,16 @@ export class GitHubMerger implements MergerPort {
       return 'auto-merge';
     }
   }
+}
+
+/**
+ * Merges as a GitHub App: each merge runs on the installation token of the pull request's repository,
+ * so the App, not the person who opened the pull request, is the one that merges.
+ */
+export function appMerger(tokens: Pick<GitHubAppTokens, 'clientFor'>): MergerPort {
+  return {
+    merge: async (request) => new GitHubMerger(await tokens.clientFor(request.repository)).merge(request),
+  };
 }
 
 function isMethodNotAllowed(error: unknown): boolean {

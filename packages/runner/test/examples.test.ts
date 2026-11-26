@@ -46,4 +46,21 @@ describe('the example configs', () => {
       ),
     ).stages.length).toBeGreaterThan(0);
   });
+
+  it('agentic-merge.config.yml lets the review stage approve', async () => {
+    const path = join(
+      EXAMPLES,
+      'agentic-merge.config.yml',
+    );
+
+    const review = readConfigText(
+      path,
+      await readFile(
+        path,
+        'utf8',
+      ),
+    ).stages.find((stage) => stage.id === 'review');
+
+    expect(review).toMatchObject({ approve: true });
+  });
 });

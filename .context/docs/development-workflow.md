@@ -58,8 +58,9 @@ loads the variables of a `.env` file before the command runs, with Node's own pa
 are still removed from the agent's environment. A missing or unreadable file stops the run; Node
 itself checks the path at startup (TD-15). `once` without `--dry-run` acts:
 it needs a token that can write the repositories' contents, issues and pull requests, and an agent
-credential the Agent SDK accepts, such as `ANTHROPIC_API_KEY` (ADR 0004). A config with a merge stage also needs `BOARDWRIGHT_MERGE_TOKEN`, a token other than the one that
-opens pull requests (ADR 0003). Clones and worktrees live in
+credential the Agent SDK accepts, such as `ANTHROPIC_API_KEY` (ADR 0004). A config with a merge stage also needs a second identity: a GitHub App
+(`BOARDWRIGHT_APP_ID` with `BOARDWRIGHT_APP_PRIVATE_KEY_FILE` or `BOARDWRIGHT_APP_PRIVATE_KEY`, ADR 0005), or
+`BOARDWRIGHT_MERGE_TOKEN`, a token other than the one that opens pull requests (ADR 0003). Clones and worktrees live in
 `BOARDWRIGHT_CACHE_DIR`, else `$XDG_CACHE_HOME/boardwright` or `~/.cache/boardwright`.
 
 ## Branching & Releases

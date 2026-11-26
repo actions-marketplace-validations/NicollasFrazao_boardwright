@@ -69,6 +69,12 @@ const reviewStage = z.object({
       z.string().min(1),
     ).default({}),
   }).prefault({}),
+
+  /**
+   * Submits the verdict as an approval or a change request instead of a comment, so a ruleset that requires
+   * approving reviews can pass. It needs a GitHub App (ADR 0005): GitHub does not let the author approve.
+   */
+  approve: z.boolean().default(false),
   ...limitsOverride,
 }).strict();
 
@@ -228,6 +234,13 @@ export const pipelineConfigSchema = z.object({
     sandbox: z.object({
       enabled: z.boolean().default(true),
       allowedDomains: z.array(z.string().min(1)).default([...DEFAULT_SANDBOX_DOMAINS]),
+
+      /**
+       * Lets commands connect to Unix sockets, such as a test database's. On Linux the sandbox cannot allow
+       * one socket by path, so this allows every socket the files let a command reach, and the provider
+       * hides the dangerous ones (Docker, the session's agents).
+       */
+      allowUnixSockets: z.boolean().default(false),
     }).strict().prefault({}),
   }).strict().prefault({}),
   git: z.object({

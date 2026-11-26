@@ -58,6 +58,14 @@ function actionCommand(variables) {
   if (mergeToken !== "") {
     environment.BOARDWRIGHT_MERGE_TOKEN = mergeToken;
   }
+  const appId = input("app-id");
+  const appKey = input("app-private-key");
+  if (appId !== "") {
+    environment.BOARDWRIGHT_APP_ID = appId;
+  }
+  if (appKey !== "") {
+    environment.BOARDWRIGHT_APP_PRIVATE_KEY = appKey;
+  }
   const runnerTemp = variables.RUNNER_TEMP;
   if (environment.BOARDWRIGHT_CACHE_DIR === void 0 && runnerTemp !== void 0) {
     environment.BOARDWRIGHT_CACHE_DIR = join(

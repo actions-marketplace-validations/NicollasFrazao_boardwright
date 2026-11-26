@@ -38,10 +38,21 @@ the people who could have made the change themselves.
   permission, so it can never start an agent.
 - **Repository token:** fine-grained, contents/pull requests/issues read-write on the allowlisted
   repositories; pull requests opened with the default token do not trigger CI.
-- **Merge token (opt-in):** `BOARDWRIGHT_MERGE_TOKEN`, separate from the token that opened the pull
-  request; `once` refuses to run a config with a merge stage without it. The merger merges at the
+- **Merge identity (opt-in):** a GitHub App (`BOARDWRIGHT_APP_ID` with its key, ADR 0005) or
+  `BOARDWRIGHT_MERGE_TOKEN`, either separate from the token that opened the pull request; `once` refuses
+  to run a config with a merge stage without one. The App's key is read from a file or a secret, never
+  stored by boardwright, and its installation tokens last an hour; the key's variable is removed from the
+  agent's environment, and the agent's sandbox denies reading `~/.config/boardwright`.
+- **The App writes as the pipeline:** with an App, the run markers, the plan, the notices, the reviews and
+  the resolved threads go out as `<app>[bot]`; the board, the push and the pull request stay on the main
+  token (GitHub Apps cannot reach a personal account's Projects v2, and the App must not be the author of
+  the pull requests it may approve). The merger merges at the
   evaluated head commit (`sha`), so a push after the evaluation fails the merge instead of merging
   unchecked commits, and it never bypasses the ruleset: it falls back to native auto-merge.
+- **Markers come only from the pipeline:** run markers in issue comments and review markers in pull
+  request reviews count only when the account of the pipeline's token or its GitHub App wrote them.
+  Anyone else's comment or review that carries a marker is ignored, so nobody can forge a run's history
+  or a review's verdict.
 - **Merge gatekeeper (`mode: agent`):** a read-only session asked only after the policy passed. It can
   veto a merge, never force one, and the policy is judged again after it before anything is merged.
 - **Agent credentials:** only the Agent SDK's documented methods (`ANTHROPIC_API_KEY`, Bedrock, Claude
@@ -63,15 +74,21 @@ The Claude provider (`packages/agent-claude/src/claude-provider.ts`) starts ever
   usual credential files of the machine's home (the GitHub CLI's token, boardwright's App key, SSH and
   cloud keys, registry tokens), they reach only the listed hosts, and they cannot retry outside the
   sandbox. On Linux it needs `bubblewrap` and `socat`; without them the session refuses to start rather
-  than run unsandboxed;
-- the environment without `BOARDWRIGHT_GITHUB_TOKEN`, `BOARDWRIGHT_MERGE_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`;
+  than run unsandboxed. `allowUnixSockets` (off by default) lets commands reach Unix sockets, such as a
+  test database's; because the Linux sandbox cannot allow one socket by path, it allows every socket the
+  files let a command reach, and the provider hides the dangerous ones: Docker and containerd, the
+  user's runtime directories (the Claude sessions, D-Bus, GnuPG, SSH agents), the system D-Bus, X11,
+  snapd, and the directory of `SSH_AUTH_SOCK`;
+- the environment without `BOARDWRIGHT_GITHUB_TOKEN`, `BOARDWRIGHT_MERGE_TOKEN`, `BOARDWRIGHT_APP_PRIVATE_KEY`,
+  `GITHUB_TOKEN` and `GH_TOKEN`;
 - only the project's settings (`settingSources: ['project']`), not the machine user's;
 - for a review or a plan, read tools only (`Read`, `Glob`, `Grep`, `Bash`) with `Edit`, `Write`, `MultiEdit` and
-  `NotebookEdit` denied; its worktree is thrown away and nothing is pushed. Its review only comments; it
-  never approves.
+  `NotebookEdit` denied; its worktree is thrown away and nothing is pushed. Its review only comments,
+  unless the stage sets `approve`: then the GitHub App (ADR 0005) submits the verdict as an approval or a
+  change request, and the agent's approval stands in for a person's review.
 - for address-feedback, the review comments and check names are fenced as input like the issue, and
   only the core resolves threads: the agent names the ones it addressed, and the core resolves those
-  that were in the feedback it read.
+  that were in the feedback it read, with or without a commit (a thread can need no change).
 
 The git workspaces give the token to the runner's own `clone`, `fetch` and `push` through the commands'
 `GIT_CONFIG_*` environment; it is never written to `.git/config`, so the agent cannot read it, and its own

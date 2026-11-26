@@ -10,6 +10,7 @@ import type {
   Issue,
   PullRequest,
   ReviewComment,
+  ReviewDraft,
 } from './ports.ts';
 import { buildReviewPrompt } from './prompt.ts';
 
@@ -105,6 +106,7 @@ export async function runReviewStage(
       {
         ...result.review,
         summary: result.summary,
+        isApproving: run.stage.id === 'review' && run.stage.approve,
       },
     );
 
@@ -125,9 +127,21 @@ async function postReview(
     readonly verdict: 'approve' | 'changes';
     readonly summary: string;
     readonly comments: readonly ReviewComment[];
+    readonly isApproving: boolean;
   },
 ): Promise<void> {
-  const heading = review.verdict === 'approve' ? 'no changes needed' : 'changes needed';
+  const isApproved = review.verdict === 'approve';
+  const heading = isApproved ? 'no changes needed' : 'changes needed';
+
+  // An approval's line comments are suggestions: as threads they would block the merge policy (zero
+  // unresolved threads) and start a feedback round for each nit. They go in the body instead.
+  const suggestions = isApproved && review.comments.length > 0 ? [
+    '',
+    '',
+    '**Suggestions** (optional, not blocking):',
+    '',
+    ...review.comments.map((comment) => `- \`${comment.path}:${comment.line}\` ${comment.body}`),
+  ].join('\n') : '';
 
   await dependencies.repoHost.submitReview({
     repository,
@@ -136,9 +150,22 @@ async function postReview(
     body: `${formatReviewMarker({
       verdict: review.verdict,
       headSha: pullRequest.headSha,
-    })}\n**boardwright review** · ${heading}\n\n${review.summary}`,
-    comments: review.comments,
+    })}\n**boardwright review** · ${heading}\n\n${review.summary}${suggestions}`,
+    comments: isApproved ? [] : review.comments,
+    event: reviewEvent(review),
   });
+}
+
+/** A stage that approves submits its verdict as such; otherwise every review only comments. */
+function reviewEvent(review: {
+  readonly verdict: 'approve' | 'changes';
+  readonly isApproving: boolean;
+}): ReviewDraft['event'] {
+  if (!review.isApproving) {
+    return 'comment';
+  }
+
+  return review.verdict === 'approve' ? 'approve' : 'request-changes';
 }
 
 function outcome(

@@ -10,6 +10,7 @@ import {
 } from 'vitest';
 import {
   diagnose,
+  type AppInstallationsPort,
   type DoctorCheck,
 } from '../src/index.ts';
 
@@ -212,5 +213,89 @@ describe('diagnose', () => {
       'board acme#3: board.parents lists "Backlog", which is not a Status option of the board; no item can match it.',
       'board acme#3: board.inferFields names "Area", which is not a single-select field of the board; it is skipped.',
     ]);
+  });
+});
+
+describe('diagnose: the GitHub App', () => {
+  function withApp(installationOf: AppInstallationsPort['installationOf']): ReturnType<typeof diagnose> {
+    const world = scenario();
+
+    return diagnose({
+      config: world.dependencies.config,
+      board: world.board,
+      repoHost: world.repoHost,
+      context: world.context,
+      app: { installationOf },
+    });
+  }
+
+  function appCheck(report: Awaited<ReturnType<typeof diagnose>>): DoctorCheck | undefined {
+    return report.checks.find((check) => check.subject === 'acme/app GitHub App');
+  }
+
+  it('passes an App installed with everything it needs', async () => {
+    const report = await withApp(() => Promise.resolve({
+      permissions: {
+        contents: 'write',
+        pull_requests: 'write',
+        issues: 'write',
+        checks: 'read',
+      },
+    }));
+
+    expect(appCheck(report)?.status).toBe('ok');
+  });
+
+  it('warns about the permissions the App will need for comments', async () => {
+    const report = await withApp(() => Promise.resolve({
+      permissions: {
+        contents: 'write',
+        pull_requests: 'write',
+        checks: 'write',
+      },
+    }));
+
+    expect(appCheck(report)).toMatchObject({
+      status: 'warn',
+      detail: expect.stringContaining('issues: write') as unknown,
+    });
+
+    expect(appCheck(report)?.detail).not.toContain('checks');
+  });
+
+  it.each([
+    [
+      'not installed',
+      () => Promise.resolve(undefined),
+      'not installed on this repository',
+    ],
+    [
+      'missing a required permission',
+      () => Promise.resolve({
+        permissions: {
+          contents: 'read',
+          pull_requests: 'write',
+        },
+      }),
+      'lacks contents: write',
+    ],
+    [
+      'unreachable',
+      () => Promise.reject(new Error('Bad credentials')),
+      'Bad credentials',
+    ],
+  ])('fails an App that is %s', async (
+    _name,
+    installationOf: AppInstallationsPort['installationOf'],
+    detail,
+  ) => {
+    const report = await withApp(installationOf);
+
+    expect(appCheck(report)).toMatchObject({
+      status: 'fail',
+      detail: expect.stringContaining(detail) as unknown,
+    });
+
+    expect(report.hasFailures).toBe(true);
   });
 });
