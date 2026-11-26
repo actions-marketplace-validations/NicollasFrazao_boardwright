@@ -1,6 +1,6 @@
 {
   "name": "boardwright-monorepo",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Agentic delivery pipelines driven by GitHub Projects: board columns map to agent roles, run locally or in GitHub Actions.",
   "license": "MIT",
   "author": "Nícollas Frazão",

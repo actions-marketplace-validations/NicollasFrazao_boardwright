@@ -20,6 +20,7 @@ Skills for this phase; open one only when a step needs it:
 4. Never change these paths; a change to any of them discards the run: \`.github/workflows/**\`, \`**/.env\`, \`**/.env.*\`, \`**/*.pem\`, \`**/*.key\`.
 5. If the issue is ambiguous or you are blocked, stop and say exactly what is missing. Do not guess.
 6. When you finish, give a pull request title in Conventional Commits form and a description of what changed, why, and how you verified it.
+7. Today is 2026-11-26. Date anything you create with today's date (a migration, a decision record, a changelog entry). To order a new file after another of the same day, raise its sequence or time, never the date: the pipeline refuses a file dated after today.
 
 ## The issue
 

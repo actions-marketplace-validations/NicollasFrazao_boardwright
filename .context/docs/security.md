@@ -93,6 +93,9 @@ The Claude provider (`packages/agent-claude/src/claude-provider.ts`) starts ever
 The git workspaces give the token to the runner's own `clone`, `fetch` and `push` through the commands'
 `GIT_CONFIG_*` environment; it is never written to `.git/config`, so the agent cannot read it, and its own
 `git push` has no credentials. The core still checks the diff against the denylist before pushing.
+It also refuses a change whose file names start with a date later than today (`2026_11_27_…`,
+`2026-11-28-…`): agents are told today's date, and a migration or decision record dated in the future
+is wrong the day it is written.
 
 ## The GitHub Action
 

@@ -1,7 +1,12 @@
-import { findDeniedPaths } from '../domain/guard-rails.ts';
 import {
+  findDeniedPaths,
+  findFutureDatedPaths,
+} from '../domain/guard-rails.ts';
+import {
+  futureDatedDetail,
   implementBranch,
   selectAgent,
+  todayOf,
   type ImplementRun,
   type ImplementStageDependencies,
   type StageOutcome,
@@ -87,6 +92,7 @@ export async function runFeedbackStage(
             },
           ),
           deniedPaths: run.deniedPaths,
+          today: todayOf(dependencies.clock),
         }),
       },
     );
@@ -123,8 +129,10 @@ async function addressIn(
     );
   }
 
+  const changedPaths = await dependencies.workspaces.changedPaths(round.workspace);
+
   const deniedChanges = findDeniedPaths(
-    await dependencies.workspaces.changedPaths(round.workspace),
+    changedPaths,
     run.deniedPaths,
   );
 
@@ -132,6 +140,18 @@ async function addressIn(
     return outcome(
       'denied',
       `The change touches denied paths: ${deniedChanges.join(', ')}. Nothing was pushed.`,
+    );
+  }
+
+  const futureDated = findFutureDatedPaths(
+    changedPaths,
+    todayOf(dependencies.clock),
+  );
+
+  if (futureDated.length > 0) {
+    return outcome(
+      'denied',
+      futureDatedDetail(futureDated),
     );
   }
 

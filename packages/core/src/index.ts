@@ -1,6 +1,7 @@
 export {
   canTriage,
   findDeniedPaths,
+  findFutureDatedPaths,
   isAllowedRepository,
   type RepositoryPermission,
 } from './domain/guard-rails.ts';

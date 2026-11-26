@@ -136,6 +136,13 @@ describe('the address-feedback stage', () => {
       'denied',
     ],
     [
+      'the fix adds a file dated after today',
+      (world: Scenario) => {
+        world.workspaces.changed = ['database/migrations/2026_12_01_000000_add_column.php'];
+      },
+      'denied',
+    ],
+    [
       'the agent committed nothing and addressed no thread',
       (world: Scenario) => {
         world.workspaces.committed = false;
@@ -285,6 +292,7 @@ describe('buildFeedbackPrompt', () => {
       },
       context: world.context.context,
       deniedPaths: ['.github/workflows/**'],
+      today: '2026-11-26',
     });
 
     expect(prompt.match(/<\/feedback>/gu)).toEqual(['</feedback>']);

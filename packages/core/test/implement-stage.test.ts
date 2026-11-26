@@ -111,6 +111,27 @@ describe('runImplementStage', () => {
     expect(world.workspaces.disposed).toHaveLength(1);
   });
 
+  it('denies a change whose file names are dated after today, and pushes nothing', async () => {
+    const world = scenario();
+
+    // The scenario's clock reads 2026-11-24.
+    world.workspaces.changed = [
+      'database/migrations/2026_11_24_000001_create_things.php',
+      'database/migrations/2026_11_25_000000_add_role.php',
+    ];
+
+    const outcome = await runImplementStage(
+      world.dependencies,
+      implementRun(),
+    );
+
+    expect(outcome.event).toBe('denied');
+    expect(outcome.detail).toContain('The change dates files after today: database/migrations/2026_11_25_000000_add_role.php.');
+    expect(outcome.detail).not.toContain('2026_11_24_000001');
+    expect(world.workspaces.pushed).toHaveLength(0);
+    expect(world.repoHost.drafts).toHaveLength(0);
+  });
+
   it('fails when the agent changed nothing', async () => {
     const world = scenario();
 

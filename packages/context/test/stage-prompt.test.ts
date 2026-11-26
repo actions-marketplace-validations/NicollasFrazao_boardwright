@@ -49,6 +49,7 @@ describe('the implement prompt built from a real base', () => {
       },
       context,
       deniedPaths: DEFAULT_DENIED_PATHS,
+      today: '2026-11-26',
     });
 
     expect(prompt).toMatchSnapshot();

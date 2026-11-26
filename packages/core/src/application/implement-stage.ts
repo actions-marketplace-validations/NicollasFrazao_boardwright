@@ -1,8 +1,12 @@
-import { findDeniedPaths } from '../domain/guard-rails.ts';
+import {
+  findDeniedPaths,
+  findFutureDatedPaths,
+} from '../domain/guard-rails.ts';
 import type { RunOutcomeEvent } from '../domain/pipeline.ts';
 import type { StageConfig } from './config.ts';
 import type {
   AgentProvider,
+  Clock,
   ContextProvider,
   Issue,
   PullRequest,
@@ -25,6 +29,24 @@ export interface ImplementStageDependencies {
   readonly workspaces: WorkspacePort;
   readonly agent: AgentProvider;
   readonly context: ContextProvider;
+
+  /** Today's date for the prompt and for the check of dated file names. */
+  readonly clock: Clock;
+}
+
+/** Today as an ISO date, `YYYY-MM-DD`, in UTC. */
+export function todayOf(clock: Clock): string {
+  return clock.now().toISOString().slice(
+    0,
+    ISO_DATE_LENGTH,
+  );
+}
+
+const ISO_DATE_LENGTH = 10;
+
+/** Why a change with future-dated file names is not pushed. */
+export function futureDatedDetail(paths: readonly string[]): string {
+  return `The change dates files after today: ${paths.join(', ')}. Date new files with today's date and raise the sequence or time to order them. Nothing was pushed.`;
 }
 
 /** One run of the implement stage. */
@@ -99,6 +121,7 @@ async function implementIn(
       workspace,
       context,
       deniedPaths: run.deniedPaths,
+      today: todayOf(dependencies.clock),
     }),
     maxTurns: run.maxTurns,
     timeoutMs: run.timeoutMs,
@@ -124,6 +147,18 @@ async function implementIn(
     return outcome(
       'denied',
       `The change touches denied paths: ${deniedChanges.join(', ')}. Nothing was pushed.`,
+    );
+  }
+
+  const futureDated = findFutureDatedPaths(
+    changedPaths,
+    todayOf(dependencies.clock),
+  );
+
+  if (futureDated.length > 0) {
+    return outcome(
+      'denied',
+      futureDatedDetail(futureDated),
     );
   }
 

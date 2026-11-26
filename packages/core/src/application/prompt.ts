@@ -18,6 +18,9 @@ export interface ImplementPromptInput {
   readonly workspace: Workspace;
   readonly context: StageContext;
   readonly deniedPaths: readonly string[];
+
+  /** Today, `YYYY-MM-DD`: the date of anything the agent creates. */
+  readonly today: string;
 }
 
 /**
@@ -51,6 +54,7 @@ export function buildImplementPrompt(input: ImplementPromptInput): string {
     `4. Never change these paths; a change to any of them discards the run: ${deniedPaths}.`,
     '5. If the issue is ambiguous or you are blocked, stop and say exactly what is missing. Do not guess.',
     '6. When you finish, give a pull request title in Conventional Commits form and a description of what changed, why, and how you verified it.',
+    `7. ${datingRule(input.today)}`,
     '',
     ISSUE_HEADING,
     '',
@@ -205,6 +209,9 @@ export interface FeedbackPromptInput {
   readonly workspace: Workspace;
   readonly context: StageContext;
   readonly deniedPaths: readonly string[];
+
+  /** Today, `YYYY-MM-DD`: the date of anything the agent creates. */
+  readonly today: string;
 }
 
 /**
@@ -247,6 +254,7 @@ export function buildFeedbackPrompt(input: FeedbackPromptInput): string {
     `4. Never change these paths; a change to any of them discards the run: ${deniedPaths}.`,
     '5. A thread you disagree with is not addressed: leave it out of the list and say why in your summary.',
     '6. When you finish, list the ids of the threads you addressed. If you are blocked, stop and say exactly what is missing.',
+    `7. ${datingRule(input.today)}`,
     '',
     '## The feedback',
     '',
@@ -271,6 +279,15 @@ export function buildFeedbackPrompt(input: FeedbackPromptInput): string {
     fenced(issue.body.trim()),
     '</issue>',
   ].join('\n');
+}
+
+/**
+ * The rule for dated files: a migration or a decision record created today carries today's date,
+ * and one that must come after another of the same day raises its sequence or time. The pipeline refuses
+ * a file dated later than today.
+ */
+function datingRule(today: string): string {
+  return `Today is ${today}. Date anything you create with today's date (a migration, a decision record, a changelog entry). To order a new file after another of the same day, raise its sequence or time, never the date: the pipeline refuses a file dated after today.`;
 }
 
 /** Neutralizes the fence tags, so input text cannot close its fence and pass for the rules. */

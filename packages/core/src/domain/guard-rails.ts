@@ -43,3 +43,25 @@ export function findDeniedPaths(
     pattern,
   )));
 }
+
+/** A date at the start of a file name, as migrations and decision records write it: `2026_11_26_` or `2026-11-26-`. */
+const LEADING_DATE = /^(?<year>\d{4})[-_](?<month>\d{2})[-_](?<day>\d{2})(?=[-_.])/u;
+
+/**
+ * The changed paths whose file name starts with a date later than `today` (an ISO `YYYY-MM-DD`), in the
+ * order they were given.
+ *
+ * @remarks
+ * An agent ordering a new migration after one of the same day must raise its sequence, not its date: a
+ * file dated in the future is wrong the day it is written.
+ */
+export function findFutureDatedPaths(
+  paths: readonly string[],
+  today: string,
+): string[] {
+  return paths.filter((path) => {
+    const groups = LEADING_DATE.exec(path.split('/').at(-1) ?? '')?.groups;
+
+    return groups !== undefined && `${groups.year}-${groups.month}-${groups.day}` > today;
+  });
+}

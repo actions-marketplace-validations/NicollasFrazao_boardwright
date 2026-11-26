@@ -7419,6 +7419,13 @@ function findDeniedPaths(changedPaths, deniedPatterns) {
     pattern
   )));
 }
+var LEADING_DATE = /^(?<year>\d{4})[-_](?<month>\d{2})[-_](?<day>\d{2})(?=[-_.])/u;
+function findFutureDatedPaths(paths, today) {
+  return paths.filter((path) => {
+    const groups = LEADING_DATE.exec(path.split("/").at(-1) ?? "")?.groups;
+    return groups !== void 0 && `${groups.year}-${groups.month}-${groups.day}` > today;
+  });
+}
 
 // packages/core/src/domain/pipeline.ts
 var PREVC_PHASES = [
@@ -27544,6 +27551,7 @@ function buildImplementPrompt(input2) {
     `4. Never change these paths; a change to any of them discards the run: ${deniedPaths}.`,
     "5. If the issue is ambiguous or you are blocked, stop and say exactly what is missing. Do not guess.",
     "6. When you finish, give a pull request title in Conventional Commits form and a description of what changed, why, and how you verified it.",
+    `7. ${datingRule(input2.today)}`,
     "",
     ISSUE_HEADING,
     "",
@@ -27676,6 +27684,7 @@ function buildFeedbackPrompt(input2) {
     `4. Never change these paths; a change to any of them discards the run: ${deniedPaths}.`,
     "5. A thread you disagree with is not addressed: leave it out of the list and say why in your summary.",
     "6. When you finish, list the ids of the threads you addressed. If you are blocked, stop and say exactly what is missing.",
+    `7. ${datingRule(input2.today)}`,
     "",
     "## The feedback",
     "",
@@ -27700,6 +27709,9 @@ function buildFeedbackPrompt(input2) {
     fenced(issue2.body.trim()),
     "</issue>"
   ].join("\n");
+}
+function datingRule(today) {
+  return `Today is ${today}. Date anything you create with today's date (a migration, a decision record, a changelog entry). To order a new file after another of the same day, raise its sequence or time, never the date: the pipeline refuses a file dated after today.`;
 }
 function fenced(text) {
   return text.replaceAll(
@@ -27732,6 +27744,16 @@ function readFirst(context) {
 }
 
 // packages/core/src/application/implement-stage.ts
+function todayOf(clock) {
+  return clock.now().toISOString().slice(
+    0,
+    ISO_DATE_LENGTH
+  );
+}
+var ISO_DATE_LENGTH = 10;
+function futureDatedDetail(paths) {
+  return `The change dates files after today: ${paths.join(", ")}. Date new files with today's date and raise the sequence or time to order them. Nothing was pushed.`;
+}
 function implementBranch(issueNumber) {
   return `agent/issue-${issueNumber}`;
 }
@@ -27772,7 +27794,8 @@ async function implementIn(dependencies, run3, workspace) {
       issue: run3.issue,
       workspace,
       context,
-      deniedPaths: run3.deniedPaths
+      deniedPaths: run3.deniedPaths,
+      today: todayOf(dependencies.clock)
     }),
     maxTurns: run3.maxTurns,
     timeoutMs: run3.timeoutMs,
@@ -27794,6 +27817,16 @@ async function implementIn(dependencies, run3, workspace) {
     return outcome(
       "denied",
       `The change touches denied paths: ${deniedChanges.join(", ")}. Nothing was pushed.`
+    );
+  }
+  const futureDated = findFutureDatedPaths(
+    changedPaths,
+    todayOf(dependencies.clock)
+  );
+  if (futureDated.length > 0) {
+    return outcome(
+      "denied",
+      futureDatedDetail(futureDated)
     );
   }
   if (changedPaths.length === 0) {
@@ -28191,7 +28224,8 @@ async function runFeedbackStage(dependencies, run3) {
               )
             }
           ),
-          deniedPaths: run3.deniedPaths
+          deniedPaths: run3.deniedPaths,
+          today: todayOf(dependencies.clock)
         })
       }
     );
@@ -28216,14 +28250,25 @@ async function addressIn(dependencies, run3, round) {
       result.summary
     );
   }
+  const changedPaths = await dependencies.workspaces.changedPaths(round.workspace);
   const deniedChanges = findDeniedPaths(
-    await dependencies.workspaces.changedPaths(round.workspace),
+    changedPaths,
     run3.deniedPaths
   );
   if (deniedChanges.length > 0) {
     return outcome2(
       "denied",
       `The change touches denied paths: ${deniedChanges.join(", ")}. Nothing was pushed.`
+    );
+  }
+  const futureDated = findFutureDatedPaths(
+    changedPaths,
+    todayOf(dependencies.clock)
+  );
+  if (futureDated.length > 0) {
+    return outcome2(
+      "denied",
+      futureDatedDetail(futureDated)
     );
   }
   const known = new Set(round.feedback.threads.map((thread) => thread.id));
@@ -36591,7 +36636,7 @@ function jsonLogger(environment) {
 }
 
 // package.json
-var package_default = { version: "0.1.7" };
+var package_default = { version: "0.1.8" };
 
 // packages/runner/src/cli.ts
 function hasCode(error62, code) {

@@ -37,6 +37,7 @@ describe('buildImplementPrompt', () => {
       workspace,
       context: new FakeContext().context,
       deniedPaths: DEFAULT_DENIED_PATHS,
+      today: '2026-11-26',
     });
 
     expect(prompt).toMatchSnapshot();
@@ -53,6 +54,7 @@ describe('buildImplementPrompt', () => {
       workspace,
       context: new FakeContext().context,
       deniedPaths: DEFAULT_DENIED_PATHS,
+      today: '2026-11-26',
     });
 
     expect(prompt.match(/<\/issue>/giu)).toEqual(['</issue>']);
@@ -74,6 +76,7 @@ describe('buildImplementPrompt', () => {
       workspace,
       context: empty,
       deniedPaths: ['.github/workflows/**'],
+      today: '2026-11-26',
     });
 
     expect(prompt).toContain('The repository has no agent instructions');
